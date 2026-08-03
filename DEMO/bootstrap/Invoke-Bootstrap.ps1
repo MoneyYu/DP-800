@@ -46,8 +46,22 @@ Write-Host 'AdventureGearAI core bootstrap complete.'
 #    The runner is dot-sourced into the current process so that the [int[]]
 #    $Modules array is passed intact — spawning a child pwsh -File process
 #    causes multi-element arrays to be serialized/concatenated and lose values.
+#
+#    IMPORTANT: dot-sourcing $moduleRunner re-executes that script's param()
+#    block in THIS scope. Because we dot-source without arguments, every runner
+#    parameter (-Modules, -Server, -User, -Database, -Force, ...) is reassigned
+#    to the runner's own DEFAULTS, silently clobbering this bootstrap's $Server,
+#    $User, and $Modules. To prevent that, capture the caller's values in
+#    uniquely named variables BEFORE the dot-source and invoke the runner with
+#    those captured copies only. -Database is intentionally not forwarded: it is
+#    already guarded to AdventureGearAI above and the runner defaults to it, so
+#    forwarding a (captured) variable would also violate the literal-target rule.
 if ($Modules.Count -gt 0) {
-    Write-Host "Delegating module execution to the runner for: $((@($Modules) | ForEach-Object { 'M{0:d2}' -f $_ }) -join ', ')"
+    $bootstrapRequestedModules = @($Modules)
+    $bootstrapServer = $Server
+    $bootstrapUser = $User
+
+    Write-Host "Delegating module execution to the runner for: $((@($bootstrapRequestedModules) | ForEach-Object { 'M{0:d2}' -f $_ }) -join ', ')"
     . $moduleRunner
-    Invoke-DemoModuleRunner -Server $Server -User $User -Modules $Modules -SkipCoreBootstrap
+    Invoke-DemoModuleRunner -Server $bootstrapServer -User $bootstrapUser -Modules $bootstrapRequestedModules -SkipCoreBootstrap
 }
