@@ -36,4 +36,3 @@ FROM dbo.EmployeeNode AS employee
 INNER JOIN dbo.EmployeeHierarchy AS hierarchy ON hierarchy.EmployeeID = employee.EmployeeID
 INNER JOIN dbo.EmployeeNode AS manager ON manager.EmployeeID = hierarchy.ManagerID;
 GO
-

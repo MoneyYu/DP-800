@@ -47,4 +47,3 @@ ADD FILTER PREDICATE Security.fn_RegionFilter(SalesRegion)
 ON dbo.SecureCustomers
 WITH (STATE = ON);
 GO
-

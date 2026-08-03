@@ -7,4 +7,3 @@ CREATE TABLE [dbo].[InventoryLog]
     [ChangeType] nvarchar(20) NOT NULL,
     [Notes] nvarchar(200) NULL
 );
-

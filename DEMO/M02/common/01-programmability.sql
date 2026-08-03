@@ -102,4 +102,3 @@ BEGIN
     WHERE i.OrderStatus <> d.OrderStatus;
 END;
 GO
-

@@ -19,4 +19,3 @@ SELECT
 FROM dbo.ProductReviews AS r
 INNER JOIN dbo.Products AS p ON p.ProductID = r.ProductID;
 GO
-

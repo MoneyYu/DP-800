@@ -5,4 +5,3 @@ WHERE o.CustomerID = c.CustomerID
   AND i.OrderID = o.OrderID
   AND c.CustomerName LIKE N'%' + N'Lee' + N'%';
 GO
-

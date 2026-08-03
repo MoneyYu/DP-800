@@ -198,4 +198,3 @@ Review only for:
 - correct M01-M11 order and titles,
 - AI-901-style curriculum hierarchy,
 - absence of trainer-only environment details.
-

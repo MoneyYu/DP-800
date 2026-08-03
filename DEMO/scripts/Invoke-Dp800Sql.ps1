@@ -44,4 +44,3 @@ finally {
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalSqlCmdPassword, 'Process')
     $temporaryPassword = $null
 }
-

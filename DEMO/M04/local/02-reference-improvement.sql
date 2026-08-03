@@ -14,4 +14,3 @@ INNER JOIN dbo.OrderItems AS i ON i.OrderID = o.OrderID
 WHERE c.CustomerName LIKE N'%' + @CustomerSearch + N'%'
 ORDER BY o.OrderDate DESC;
 GO
-

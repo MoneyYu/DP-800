@@ -20,4 +20,3 @@ SELECT
     N'Always Encrypted requires a client driver configured with a column master key and column encryption key.' AS AlwaysEncryptedLocalResult,
     N'EncryptedCardNumber remains NULL in this server-only demo.' AS Reason;
 GO
-

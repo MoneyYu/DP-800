@@ -6,7 +6,7 @@ pptx-extraction-method: PowerShell System.IO.Compression.ZipFile + SelectNodes("
 
 # DP-800T00-A 課程官方研究報告
 
-> 繁體中文；技術名稱、URL、程式碼保留英文。  
+> 繁體中文；技術名稱、URL、程式碼保留英文。
 > 基準日期：2026-08-03
 
 ---
@@ -464,23 +464,23 @@ pptx-extraction-method: PowerShell System.IO.Compression.ZipFile + SelectNodes("
 
 以下項目**無法僅憑現有官方文件直接確認**，不得宣稱已驗證：
 
-1. **SQL Server 2025 本機 AI Functions RTM 支援範圍**  
+1. **SQL Server 2025 本機 AI Functions RTM 支援範圍**
    `CREATE EXTERNAL MODEL` 和 `AI_GENERATE_EMBEDDINGS`、`VECTOR_SEARCH`（ANN）在 SQL Server 2025 RTM（17.0.4065.4）的確切支援範圍，應在每次課前以本機 `mssql2025` container 實機測試確認，不可假設與 Azure SQL Database 完全等同。
 
-2. **Japan East Azure OpenAI 模型可用性與配額**  
+2. **Japan East Azure OpenAI 模型可用性與配額**
    Japan East 理論上支援 Azure OpenAI，但具體模型（如 `gpt-4.1-mini`, `text-embedding-3-small`）的可用性和每訂閱配額受帳戶層級影響。**不可宣稱 Japan East 完整支援所有課程用模型**。建議課前執行：
    ```bash
    az cognitiveservices account list-models --name <resource> --resource-group <rg>
    ```
    確認可用 deployment SKU。
 
-3. **DP-800 Study Guide 頁面 title bug**  
+3. **DP-800 Study Guide 頁面 title bug**
    URL `https://learn.microsoft.com/en-us/credentials/certifications/resources/study-guides/dp-800` 回傳 HTTP 200，但 `<title>` 顯示為 "Study Guide for Exam DP-700: Implementing Data Engineering Solutions Using Azure Databricks"（DP-700 字樣）。頁面內容本身是 DP-800 的學習指南（Microsoft Learn 後端 routing 正確），但 title 屬於已知 bug。已回報研究時發現，每次課前應重新確認 Microsoft 是否已修正。
 
-4. **`VECTOR_SEARCH`（ANN）在 SQL Server 2025 的可用性**  
+4. **`VECTOR_SEARCH`（ANN）在 SQL Server 2025 的可用性**
    文件指出 ANN vector search 在 Azure SQL Database 已 GA，但在 SQL Server 2025 RTM 的狀態需實機確認。
 
-5. **考試語言**  
+5. **考試語言**
    DP-800 考試目前僅提供英文版；若課程以中文授課，需向學員說明考試仍需以英文作答。
 
 ---

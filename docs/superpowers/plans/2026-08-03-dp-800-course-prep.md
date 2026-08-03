@@ -1,7 +1,7 @@
 # DP-800 Course Reference Repo — Execution Plan
 
-**Date:** 2026-08-03  
-**Source plan:** session `738e5108-4c57-49f0-bded-1326be73fbb3/plan.md`  
+**Date:** 2026-08-03
+**Source plan:** session `738e5108-4c57-49f0-bded-1326be73fbb3/plan.md`
 **Design spec:** `docs/superpowers/specs/2026-08-03-dp-800-course-prep-design.md`
 
 ---
@@ -20,7 +20,7 @@
 
 ## Phase 1 — Official Content Research
 
-**Prerequisite:** None  
+**Prerequisite:** None
 **Output artifacts:** `docs/url-ledger.md`
 
 - [ ] Fetch Learn course page: `https://learn.microsoft.com/training/courses/dp-800t00`
@@ -42,7 +42,7 @@
 
 ## Phase 2 — Attendee README Rewrite
 
-**Prerequisite:** Phase 1 complete  
+**Prerequisite:** Phase 1 complete
 **Target file:** `README.md`
 
 - [ ] Preserve HackMD front matter, admonition syntax, and markmap fenced block format
@@ -69,7 +69,7 @@ Select-String -Path README.md -Pattern 'password|Password|PASSWORD' -SimpleMatch
 
 ## Phase 3 — DEMO Rebuild
 
-**Prerequisite:** Phase 1 complete  
+**Prerequisite:** Phase 1 complete
 **Target directory:** `DEMO/`
 
 - [ ] Remove all existing `DEMO/` contents (DP-300/AZ-204 SQL, backup files, admin demos)
@@ -113,7 +113,7 @@ Get-ChildItem DEMO -Recurse -Filter 'reset*' | Measure-Object
 
 ## Phase 4 — Terraform Modernization
 
-**Prerequisite:** Official AzureRM/AzAPI migration guides read  
+**Prerequisite:** Official AzureRM/AzAPI migration guides read
 **Target directory:** `TERRAFORM/`
 
 - [ ] Read current `TERRAFORM/` structure to inventory all `.tf` files
@@ -166,7 +166,7 @@ Remove-Item tfplan-*
 
 ## Phase 5 — DP-800 AI/RAG Terraform Module
 
-**Prerequisite:** Phase 4 complete; model lifecycle and Japan East availability verified  
+**Prerequisite:** Phase 4 complete; model lifecycle and Japan East availability verified
 **Target:** `TERRAFORM/modules/core-sql-ai/`
 
 - [ ] Verify current GA embedding model available in Japan East (or document `ai_location` override)
@@ -201,7 +201,7 @@ Remove-Item tfplan-core
 
 ## Phase 6 — Terraform Documentation & Sample Data
 
-**Prerequisite:** Phase 4 & 5 complete  
+**Prerequisite:** Phase 4 & 5 complete
 
 - [ ] Create `TERRAFORM/README.md`:
   - **⚠️ HIGH COST WARNING** at top: SQL MI (~$400+/month), SQL VMs (~$100+/month each) — deploy selectively
@@ -229,8 +229,8 @@ Remove-Item tfplan-core
 
 ## Phase 7 — Trainer Teaching Guide
 
-**Prerequisite:** Phase 1, 3, 4, 5 complete  
-**Target file:** `docs/teaching-guide.md`  
+**Prerequisite:** Phase 1, 3, 4, 5 complete
+**Target file:** `docs/teaching-guide.md`
 **Language:** 繁體中文; technical names and URLs in English
 
 - [ ] Create 3-day agenda with time allocation (learning paths as day boundaries)
@@ -287,7 +287,7 @@ Remove-Item tfplan-core
 
 ## Phase 9 — Local Docker SQL Server 2025 Validation
 
-**Prerequisite:** Phase 8 complete  
+**Prerequisite:** Phase 8 complete
 **Environment:** `mssql2025` container at `127.0.0.1:1433`
 
 - [ ] Connect via `$env:DP800_SQL_PASSWORD`; verify connection succeeds without exposing password in command line
@@ -301,7 +301,7 @@ Remove-Item tfplan-core
 
 ## Phase 10 — Azure End-to-End Validation (7 groups)
 
-**Prerequisite:** Phase 9 complete  
+**Prerequisite:** Phase 9 complete
 **Each group uses unique `group_postfix`**
 
 - [ ] Group 1: DP-800 core Azure SQL + OpenAI/Foundry + embeddings/vector/RAG

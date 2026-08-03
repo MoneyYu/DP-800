@@ -6,4 +6,3 @@
 4. Test `http://localhost:5000/api/Product` and `http://localhost:5000/graphql`.
 
 Local SQL authentication is only a trainer convenience. The repository does not provide or persist the connection string.
-

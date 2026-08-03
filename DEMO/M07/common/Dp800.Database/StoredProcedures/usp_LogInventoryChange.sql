@@ -10,4 +10,3 @@ BEGIN
     INSERT dbo.InventoryLog (ProductID, QuantityChange, ChangeType, Notes)
     VALUES (@ProductID, @QuantityChange, @ChangeType, @Notes);
 END;
-

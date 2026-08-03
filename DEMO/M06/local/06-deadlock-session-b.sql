@@ -10,4 +10,3 @@ BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS DeadlockResult;
 END CATCH;
 GO
-

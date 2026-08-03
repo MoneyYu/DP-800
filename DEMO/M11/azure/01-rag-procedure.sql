@@ -47,4 +47,3 @@ BEGIN
         THROW 51110, 'Azure OpenAI REST invocation failed; inspect the response and managed-identity permissions.', 1;
 END;
 GO
-

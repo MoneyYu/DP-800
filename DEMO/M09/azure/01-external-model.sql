@@ -21,4 +21,3 @@ GO
 
 -- The referenced database scoped credential must be created separately with managed identity.
 -- No API key, tenant ID, object ID, or token belongs in this file.
-

@@ -7,4 +7,3 @@
 - Explain local SQL Server versus Azure SQL feature differences.
 - Never emit passwords, tokens, tenant IDs, object IDs, or credential-bearing connection strings.
 - Before suggesting an index, explain the target predicate, expected benefit, and write overhead.
-

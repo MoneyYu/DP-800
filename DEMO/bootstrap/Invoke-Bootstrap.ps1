@@ -16,4 +16,3 @@ foreach ($module in $Modules) {
     $database = 'DP800_M{0:D2}' -f $module
     & $runner -Server $Server -User $User -Database $database -InputFile (Join-Path $PSScriptRoot '01-seed-ecommerce.sql')
 }
-

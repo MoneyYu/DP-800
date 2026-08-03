@@ -43,4 +43,3 @@ FROM dbo.ApiProducts AS p
 INNER JOIN dbo.ApiCategories AS c ON c.CategoryID = p.CategoryID
 WHERE p.Discontinued = 0;
 GO
-

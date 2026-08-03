@@ -1,9 +1,9 @@
 # DP-800 Course Reference Repo — Approved Design Decisions
 
-**Status:** Approved  
-**Date:** 2026-08-03  
-**Course:** DP-800T00-A: Develop AI-enabled database solutions (3 days)  
-**Certification:** Microsoft Certified: SQL AI Developer Associate  
+**Status:** Approved
+**Date:** 2026-08-03
+**Course:** DP-800T00-A: Develop AI-enabled database solutions (3 days)
+**Certification:** Microsoft Certified: SQL AI Developer Associate
 **Official lab repo:** `MicrosoftLearning/mslearn-sql-developer`
 
 ---
@@ -157,8 +157,8 @@ No hardcoded passwords, personal object IDs, or secrets in any demo script.
 
 ### Container lifecycle
 
-The repo does **not** create, stop, delete, or persist the Docker container or its volumes.  
-Each course session runs a bootstrap/reset from a clean demo database state.  
+The repo does **not** create, stop, delete, or persist the Docker container or its volumes.
+Each course session runs a bootstrap/reset from a clean demo database state.
 Reset scripts assume the database may not exist or can be safely rebuilt; they never drop databases outside the DP-800 naming convention.
 
 ### `.env.example`
@@ -181,7 +181,7 @@ Provided without secrets. Actual `.env` is git-ignored.
 
 ## 8. gitattributes & gitignore Policy
 
-`.gitattributes` must declare LFS for: `.bak`, `.bacpac`, `.tar`, `.pdf`, `.pptx`, `.png`, `.jpg`  
+`.gitattributes` must declare LFS for: `.bak`, `.bacpac`, `.tar`, `.pdf`, `.pptx`, `.png`, `.jpg`
 `.gitignore` must exclude: `.env`, `*.tfvars` containing secrets, `terraform.tfstate*`, `.terraform/`
 
 ---
@@ -201,9 +201,9 @@ Session-specific fields use explicit placeholders (not TBD/TODO):
 
 ## 10. Model Lifecycle Rule
 
-AI model deployments must use currently available GA models at time of implementation.  
-Japan East availability and quota must be verified.  
-Region override (`ai_location`) required only when Japan East lacks support.  
+AI model deployments must use currently available GA models at time of implementation.
+Japan East availability and quota must be verified.
+Region override (`ai_location`) required only when Japan East lacks support.
 Model selection must be re-verified before each course delivery.
 
 ---
