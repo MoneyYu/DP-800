@@ -1,43 +1,66 @@
+/*
+    M03 local/01-advanced-queries.sql
+
+    Advanced T-SQL against AdventureGearAI: recursive CTE, window functions,
+    OPENJSON shredding, SOUNDEX/DIFFERENCE fuzzy matching, SQL graph MATCH,
+    runtime regular-expression feature detection, and structured error handling.
+    Read-only apart from a self-rolling-back error-handling demonstration.
+*/
+SET NOCOUNT ON;
+GO
+
+/* Recursive CTE over the org-chart teaching object. */
 ;WITH Organization AS
 (
     SELECT EmployeeID, ManagerID, EmployeeName, 0 AS Depth
-    FROM dbo.EmployeeHierarchy
+    FROM ops.EmployeeHierarchy
     WHERE ManagerID IS NULL
     UNION ALL
     SELECT child.EmployeeID, child.ManagerID, child.EmployeeName, parent.Depth + 1
-    FROM dbo.EmployeeHierarchy AS child
+    FROM ops.EmployeeHierarchy AS child
     INNER JOIN Organization AS parent ON child.ManagerID = parent.EmployeeID
 )
 SELECT EmployeeID, REPLICATE(N'  ', Depth) + EmployeeName AS OrganizationChart
 FROM Organization
 ORDER BY Depth, EmployeeID;
 
+/* Window functions ranking canonical products within their category. */
 SELECT
-    p.Category,
+    cat.CategoryName,
     p.ProductName,
     p.UnitPrice,
-    ROW_NUMBER() OVER (PARTITION BY p.Category ORDER BY p.UnitPrice DESC) AS PriceRank,
-    SUM(p.UnitPrice) OVER (PARTITION BY p.Category) AS CategoryValue
-FROM dbo.Products AS p;
+    ROW_NUMBER() OVER (PARTITION BY cat.CategoryName ORDER BY p.UnitPrice DESC) AS PriceRank,
+    SUM(p.UnitPrice) OVER (PARTITION BY cat.CategoryName) AS CategoryValue
+FROM catalog.Products AS p
+INNER JOIN catalog.Categories AS cat ON cat.CategoryID = p.CategoryID
+ORDER BY cat.CategoryName, PriceRank;
 
-DECLARE @Updates nvarchar(max) = N'[{"ProductID":1,"NewPrice":1424.05},{"ProductID":2,"NewPrice":59.50}]';
+/* OPENJSON shredding of a proposed price-update document. */
+DECLARE @Updates nvarchar(max) = N'[{"ProductID":1,"NewPrice":1424.05},{"ProductID":5,"NewPrice":45.90}]';
 SELECT ProductID, NewPrice
 FROM OPENJSON(@Updates)
 WITH (ProductID int '$.ProductID', NewPrice decimal(10,2) '$.NewPrice');
 
-SELECT ProductName, SOUNDEX(ProductName) AS SoundexCode, DIFFERENCE(ProductName, N'Puncture Guard Tyre') AS FuzzyScore
-FROM dbo.Products;
+/* Fuzzy matching of product names against a misspelled search term. */
+SELECT ProductName, SOUNDEX(ProductName) AS SoundexCode,
+       DIFFERENCE(ProductName, N'Puncture Guard Tyre') AS FuzzyScore
+FROM catalog.Products
+ORDER BY FuzzyScore DESC, ProductName;
 
+/* SQL graph MATCH: employee -> manager reporting relationships. */
 SELECT employee.EmployeeName, manager.EmployeeName AS ManagerName
-FROM dbo.EmployeeNode AS employee,
-     dbo.ReportsTo AS relation,
-     dbo.EmployeeNode AS manager
-WHERE MATCH(employee-(relation)->manager);
+FROM ops.EmployeeNode AS employee,
+     ops.ReportsTo AS relation,
+     ops.EmployeeNode AS manager
+WHERE MATCH(employee-(relation)->manager)
+ORDER BY manager.EmployeeName, employee.EmployeeName;
 
+/* Runtime feature detection for SQL Server 2025 regular-expression syntax over
+   canonical customer email addresses. */
 BEGIN TRY
     EXEC sys.sp_executesql N'
         SELECT CustomerName, Email
-        FROM dbo.Customers
+        FROM customer.Customers
         WHERE REGEXP_LIKE(Email, ''^[^@]+@[^@]+[.][^@]+$'');';
     PRINT N'REGEX: supported and executed.';
 END TRY
@@ -50,6 +73,7 @@ BEGIN CATCH
         THROW;
 END CATCH;
 
+/* Structured error handling with a rolled-back transaction. */
 BEGIN TRY
     BEGIN TRANSACTION;
     THROW 51030, 'Demonstration error: transaction will be rolled back.', 1;

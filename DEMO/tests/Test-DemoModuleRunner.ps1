@@ -119,10 +119,25 @@ try {
     # --- 5) Missing / incompatible manifest failures -------------------------
     $prodManifest = Read-DemoModuleManifest -Path $manifestJson
     Assert-Equal -Actual (($prodManifest.Keys | Sort-Object) -join ',') -Expected '1,2,3,4,5,6,7,8,9,10,11' -Message 'Production manifest must list all 11 modules.'
+    # Migration-tolerant readiness: modules migrated to AdventureGearAI flip to
+    # ready=true and must resolve at least one common/local setup script; modules
+    # still on the legacy layout stay ready=false and must refuse to run.
     foreach ($module in 1..11) {
-        Assert-Equal -Actual $prodManifest[$module].Ready -Expected $false -Message "Production manifest M$('{0:d2}' -f $module) must be ready=false (legacy, unmigrated)."
+        if ($prodManifest[$module].Ready) {
+            $resolvedReady = @(Get-DemoModuleSetupScripts -Manifest $prodManifest -Module $module -Scope local)
+            Assert-True -Condition ($resolvedReady.Count -ge 1) -Message "Ready manifest M$('{0:d2}' -f $module) must resolve at least one common/local setup script."
+        }
+        else {
+            Assert-Throws -Action { Get-DemoModuleSetupScripts -Manifest $prodManifest -Module $module -Scope local } -Pattern 'not populated/migrated yet' -Message "Not-ready manifest M$('{0:d2}' -f $module) must refuse to run legacy scripts."
+        }
     }
-    Assert-Throws -Action { Get-DemoModuleSetupScripts -Manifest $prodManifest -Module 1 -Scope local } -Pattern 'not populated/migrated yet' -Message 'A not-ready module must fail clearly instead of running legacy scripts.'
+    # Exercise the not-ready refusal path explicitly (holds even once every
+    # production module is migrated) via a synthetic ready=false manifest.
+    New-Item -ItemType Directory -Path $sandboxRoot -Force | Out-Null
+    $notReadyManifestPath = Join-Path $sandboxRoot 'not-ready-manifest.json'
+    Set-Content -LiteralPath $notReadyManifestPath -Value (@{ schemaVersion = '1.0.0'; modules = @(@{ module = 1; ready = $false; setup = @{ common = @(); local = @(); azure = @() } }) } | ConvertTo-Json -Depth 6) -NoNewline
+    $notReadyManifest = Read-DemoModuleManifest -Path $notReadyManifestPath
+    Assert-Throws -Action { Get-DemoModuleSetupScripts -Manifest $notReadyManifest -Module 1 -Scope local } -Pattern 'not populated/migrated yet' -Message 'A not-ready module must fail clearly instead of running legacy scripts.'
     $emptyManifest = @{}
     Assert-Throws -Action { Get-DemoModuleSetupScripts -Manifest $emptyManifest -Module 5 -Scope local } -Pattern 'no setup manifest entry' -Message 'An absent manifest entry must fail clearly.'
 

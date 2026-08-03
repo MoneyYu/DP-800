@@ -1,34 +1,56 @@
+/*
+    M06 common/01-workload.sql
+
+    Module 6 (Optimize database performance) workload for AdventureGearAI. It
+    builds a larger read/write workload table (ops.PerformanceOrders) derived from
+    the canonical catalog/customer core: every generated row references a real
+    catalog.Products row (ProductID + UnitPrice) and a real customer.Customers
+    row (CustomerID), amplified with a numbers generator to a size worth tuning.
+
+    Idempotent: the table is dropped and rebuilt, and Query Store is enabled with
+    a repeatable option set.
+*/
 SET NOCOUNT ON;
+SET XACT_ABORT ON;
 GO
 
-DROP TABLE IF EXISTS dbo.PerformanceOrders;
+DROP TABLE IF EXISTS ops.PerformanceOrders;
 
-CREATE TABLE dbo.PerformanceOrders
+CREATE TABLE ops.PerformanceOrders
 (
     OrderID int IDENTITY(1,1) NOT NULL CONSTRAINT PK_PerformanceOrders PRIMARY KEY,
-    CustomerID int NOT NULL,
-    ProductID int NOT NULL,
+    CustomerID int NOT NULL
+        CONSTRAINT FK_PerformanceOrders_Customers REFERENCES customer.Customers(CustomerID),
+    ProductID int NOT NULL
+        CONSTRAINT FK_PerformanceOrders_Products REFERENCES catalog.Products(ProductID),
     OrderDate datetime2(0) NOT NULL,
-    Quantity int NOT NULL,
+    Quantity int NOT NULL CONSTRAINT CK_PerformanceOrders_Quantity CHECK (Quantity > 0),
     UnitPrice decimal(10,2) NOT NULL,
     OrderStatus nvarchar(20) NOT NULL
 );
+GO
 
+/* Amplify the canonical catalog/customer rows into a tunable workload. Each row
+   maps to an existing ProductID (1..12) and CustomerID (1..6) so foreign keys
+   hold and the data stays true to the AdventureGearAI scenario. */
 ;WITH Numbers AS
 (
     SELECT TOP (10000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS Number
     FROM sys.all_objects AS a
     CROSS JOIN sys.all_objects AS b
 )
-INSERT dbo.PerformanceOrders (CustomerID, ProductID, OrderDate, Quantity, UnitPrice, OrderStatus)
+INSERT ops.PerformanceOrders (CustomerID, ProductID, OrderDate, Quantity, UnitPrice, OrderStatus)
 SELECT
-    (Number % 200) + 1,
-    (Number % 4) + 1,
-    DATEADD(minute, -Number, SYSUTCDATETIME()),
-    (Number % 5) + 1,
-    CAST(10 + (Number % 200) AS decimal(10,2)),
-    CHOOSE((Number % 4) + 1, N'Pending', N'Processing', N'Shipped', N'Delivered')
-FROM Numbers;
+    cust.CustomerID,
+    prod.ProductID,
+    DATEADD(minute, -n.Number, SYSUTCDATETIME()),
+    (n.Number % 5) + 1,
+    prod.UnitPrice,
+    CHOOSE((n.Number % 4) + 1, N'Pending', N'Processing', N'Shipped', N'Delivered')
+FROM Numbers AS n
+CROSS APPLY (SELECT ProductID, UnitPrice FROM catalog.Products WHERE ProductID = (n.Number % 12) + 1) AS prod
+CROSS APPLY (SELECT CustomerID FROM customer.Customers WHERE CustomerID = (n.Number % 6) + 1) AS cust;
+GO
 
 ALTER DATABASE CURRENT SET QUERY_STORE = ON
 (
@@ -36,4 +58,7 @@ ALTER DATABASE CURRENT SET QUERY_STORE = ON
     QUERY_CAPTURE_MODE = AUTO,
     WAIT_STATS_CAPTURE_MODE = ON
 );
+GO
+
+PRINT N'M06 performance workload created against AdventureGearAI (ops.PerformanceOrders).';
 GO

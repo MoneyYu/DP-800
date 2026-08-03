@@ -6,12 +6,12 @@
     "azureExcludedFromLocal": true
   },
   "modules": [
-    { "module": 1,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 2,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 3,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 4,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 5,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 6,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 1,  "ready": true,  "setup": { "common": ["../M01/common/01-objects.sql"], "local": ["../M01/local/01-inspect.sql"], "azure": [] } },
+    { "module": 2,  "ready": true,  "setup": { "common": ["../M02/common/01-programmability.sql"], "local": ["../M02/local/01-exercise.sql"], "azure": [] } },
+    { "module": 3,  "ready": true,  "setup": { "common": ["../M03/common/01-advanced-objects.sql"], "local": ["../M03/local/01-advanced-queries.sql"], "azure": [] } },
+    { "module": 4,  "ready": true,  "setup": { "common": [], "local": ["../M04/local/01-review-target.sql", "../M04/local/02-reference-improvement.sql"], "azure": [] } },
+    { "module": 5,  "ready": true,  "setup": { "common": ["../M05/common/01-security.sql"], "local": ["../M05/local/01-verify-security.sql"], "azure": [] } },
+    { "module": 6,  "ready": true,  "setup": { "common": ["../M06/common/01-workload.sql"], "local": ["../M06/local/01-plans-query-store-dmvs.sql"], "azure": [] } },
     { "module": 7,  "ready": true,  "setup": { "common": ["../M07/common/01-inventory-deployment-log.sql"], "local": [], "azure": [] } },
     { "module": 8,  "ready": true,  "setup": { "common": ["../M08/common/01-product-api.sql"], "local": [], "azure": [] } },
     { "module": 9,  "ready": true,  "setup": { "common": ["../M09/common/01-review-data.sql"], "local": ["../M09/local/01-feature-detection.sql"], "azure": ["../M09/azure/01-external-model.sql"] } },
