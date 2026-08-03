@@ -198,6 +198,63 @@ END;
     $legacyReportingResult = Invoke-HarnessFixture -Name 'legacy-reporting-and-master'
     Assert-Equal -Actual $legacyReportingResult.ExitCode -Expected 0 -Message 'Harness should allow legacy reporting text and a master control connection when destructive targets stay hard-scoped.'
 
+    $bootstrapSqlLegacyReportingFixture = Join-Path $sandboxRoot 'bootstrap-sql-legacy-reporting'
+    New-MinimalUnifiedDemoRepository -Path $bootstrapSqlLegacyReportingFixture -TopLevelReadme @'
+# Demo
+
+Run `common/01-demo.sql` against `AdventureGearAI`.
+'@ -BootstrapScript @'
+$runner = Join-Path $PSScriptRoot '..\scripts\Invoke-Dp800Sql.ps1'
+& $runner -Database master -InputFile (Join-Path $PSScriptRoot '00-create-adventuregear-database.sql')
+& $runner -Database AdventureGearAI -InputFile (Join-Path $PSScriptRoot '01-initialize-adventuregear-demo.sql')
+'@ -FullResetScript @'
+IF DB_ID(N'AdventureGearAI') IS NOT NULL
+BEGIN
+    ALTER DATABASE [AdventureGearAI] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE [AdventureGearAI];
+END
+'@
+    Write-TestFile -Path (Join-Path $bootstrapSqlLegacyReportingFixture 'DEMO\bootstrap\00-create-adventuregear-database.sql') -Content @'
+PRINT N''AdventureGearAI bootstrap ready.'';
+PRINT N''Legacy database DP800_M01 is a manual cleanup candidate only.'';
+CREATE DATABASE [AdventureGearAI];
+'@
+
+    $bootstrapSqlLegacyReportingResult = Invoke-HarnessFixture -Name 'bootstrap-sql-legacy-reporting'
+    Assert-Equal -Actual $bootstrapSqlLegacyReportingResult.ExitCode -Expected 0 -Message 'Harness should allow bootstrap SQL comments and PRINT statements that report DP800_Mxx cleanup candidates without targeting them.'
+
+    $bootstrapSqlLegacyLoopFixture = Join-Path $sandboxRoot 'bootstrap-sql-legacy-loop'
+    New-MinimalUnifiedDemoRepository -Path $bootstrapSqlLegacyLoopFixture -TopLevelReadme @'
+# Demo
+
+Run `common/01-demo.sql` against `AdventureGearAI`.
+'@ -BootstrapScript @'
+$runner = Join-Path $PSScriptRoot '..\scripts\Invoke-Dp800Sql.ps1'
+& $runner -Database master -InputFile (Join-Path $PSScriptRoot '00-create-adventuregear-database.sql')
+& $runner -Database AdventureGearAI -InputFile (Join-Path $PSScriptRoot '01-initialize-adventuregear-demo.sql')
+'@ -FullResetScript @'
+IF DB_ID(N'AdventureGearAI') IS NOT NULL
+BEGIN
+    ALTER DATABASE [AdventureGearAI] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE [AdventureGearAI];
+END
+'@
+    Write-TestFile -Path (Join-Path $bootstrapSqlLegacyLoopFixture 'DEMO\bootstrap\00-create-adventuregear-database.sql') -Content @'
+DECLARE @ModuleNumber int = 1;
+DECLARE @DatabaseName sysname;
+
+WHILE @ModuleNumber <= 11
+BEGIN
+    SET @DatabaseName = CONCAT(N''DP800_M'', RIGHT(CONCAT(N''0'', @ModuleNumber), 2));
+    EXEC sys.sp_executesql N''CREATE DATABASE '' + QUOTENAME(@DatabaseName) + N'';'';
+    SET @ModuleNumber += 1;
+END;
+'@
+
+    $bootstrapSqlLegacyLoopResult = Invoke-HarnessFixture -Name 'bootstrap-sql-legacy-loop'
+    Assert-Equal -Actual $bootstrapSqlLegacyLoopResult.ExitCode -Expected 1 -Message 'Harness should reject bootstrap SQL loops that construct legacy DP800_Mxx database names.'
+    Assert-Match -Actual $bootstrapSqlLegacyLoopResult.Output -Pattern 'Bootstrap SQL asset.*legacy|DP800_M' -Message 'Harness failure should identify the bootstrap SQL legacy target pattern.'
+
     $dynamicDropFixture = Join-Path $sandboxRoot 'dynamic-drop-target'
     New-MinimalUnifiedDemoRepository -Path $dynamicDropFixture -TopLevelReadme @'
 # Demo
@@ -219,6 +276,28 @@ END
     $dynamicDropResult = Invoke-HarnessFixture -Name 'dynamic-drop-target'
     Assert-Equal -Actual $dynamicDropResult.ExitCode -Expected 1 -Message 'Harness should reject dynamic DROP/ALTER DATABASE targets.'
     Assert-Match -Actual $dynamicDropResult.Output -Pattern 'DROP DATABASE|ALTER DATABASE|hard-scoped|database target' -Message 'Harness failure should explain why a dynamic destructive target is forbidden.'
+
+    $bootstrapVariableTargetFixture = Join-Path $sandboxRoot 'bootstrap-variable-database-target'
+    New-MinimalUnifiedDemoRepository -Path $bootstrapVariableTargetFixture -TopLevelReadme @'
+# Demo
+
+Run `common/01-demo.sql` against `AdventureGearAI`.
+'@ -BootstrapScript @'
+$runner = Join-Path $PSScriptRoot '..\scripts\Invoke-Dp800Sql.ps1'
+$databaseName = 'AdventureGearAI'
+& $runner -Database master -InputFile (Join-Path $PSScriptRoot '00-create-adventuregear-database.sql')
+& $runner -Database $databaseName -InputFile (Join-Path $PSScriptRoot '01-initialize-adventuregear-demo.sql')
+'@ -FullResetScript @'
+IF DB_ID(N'AdventureGearAI') IS NOT NULL
+BEGIN
+    ALTER DATABASE [AdventureGearAI] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE [AdventureGearAI];
+END
+'@
+
+    $bootstrapVariableTargetResult = Invoke-HarnessFixture -Name 'bootstrap-variable-database-target'
+    Assert-Equal -Actual $bootstrapVariableTargetResult.ExitCode -Expected 1 -Message 'Harness should reject bootstrap database targets passed via variables, even when they currently resolve to AdventureGearAI.'
+    Assert-Match -Actual $bootstrapVariableTargetResult.Output -Pattern 'Bootstrap script.*database target|non-literal|AdventureGearAI' -Message 'Harness failure should explain that bootstrap database targets must be literal master or AdventureGearAI values.'
 
     $bootstrapArbitraryTargetFixture = Join-Path $sandboxRoot 'bootstrap-arbitrary-database-target'
     New-MinimalUnifiedDemoRepository -Path $bootstrapArbitraryTargetFixture -TopLevelReadme @'

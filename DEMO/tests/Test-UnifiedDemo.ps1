@@ -104,41 +104,6 @@ function Test-ReadmeExecutionTargets {
     }
 }
 
-function Test-LegacyDatabaseTargetUsage {
-    param(
-        [string]$Path,
-        [string]$Context
-    )
-
-    $text = Get-FileText -Path $Path
-    if ($null -eq $text) {
-        return
-    }
-
-    $lines = $text -split "\r?\n"
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $line = $lines[$i]
-        $explicitDatabaseMatch = [regex]::Match($line, '(?i)-Database\s+(?<Target>["'']?[A-Za-z0-9_]+["'']?)')
-        if ($explicitDatabaseMatch.Success) {
-            $explicitDatabaseTarget = $explicitDatabaseMatch.Groups['Target'].Value.Trim('"', '''')
-            if ($explicitDatabaseTarget -notin @('master', 'AdventureGearAI')) {
-                Add-Failure "$Context $(Resolve-RepoPath -Path $Path):$($i + 1) uses a forbidden database target: $explicitDatabaseTarget"
-                continue
-            }
-        }
-
-        $targetsLegacyDatabase = $line -match '(?i)-Database\s+[''"]?`?DP800_M\d{2}`?' -or
-            $line -match '(?i)\b(?:CREATE|DROP|ALTER)\s+DATABASE(?:\s+IF\s+EXISTS)?\s+\[?DP800_M\d{2}\]?' -or
-            $line -match '(?i)\bUSE\s+\[?DP800_M\d{2}\]?' -or
-            $line -match '(?i)\$(?:\w*database\w*)\s*=\s*[''"]DP800_M\d{2}[''"]' -or
-            $line -match '(?i)\$(?:\w*database\w*)\s*=\s*@\([^)]*DP800_M\d{2}'
-
-        if ($targetsLegacyDatabase) {
-            Add-Failure "$Context $(Resolve-RepoPath -Path $Path):$($i + 1) still targets a legacy DP800_Mxx database."
-        }
-    }
-}
-
 function Get-ChangedFilesInRange {
     param(
         [string]$Base,
@@ -152,6 +117,109 @@ function Get-ChangedFilesInRange {
     }
 
     return @($output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
+function Get-LineNumberFromIndex {
+    param(
+        [string]$Text,
+        [int]$Index
+    )
+
+    if ([string]::IsNullOrEmpty($Text) -or $Index -le 0) {
+        return 1
+    }
+
+    $safeLength = [Math]::Min($Index, $Text.Length)
+    return ([regex]::Matches($Text.Substring(0, $safeLength), "\r?\n").Count + 1)
+}
+
+function Normalize-DatabaseTargetToken {
+    param([string]$Target)
+
+    return $Target.Trim().Trim('[', ']', '"', '''', '`', ';')
+}
+
+function Test-BootstrapScriptDatabaseTargets {
+    param([string]$Path)
+
+    $text = Get-FileText -Path $Path
+    if ($null -eq $text) {
+        return
+    }
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) {
+        foreach ($parseError in $parseErrors) {
+            Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$($parseError.Extent.StartLineNumber) could not be parsed: $($parseError.Message)"
+        }
+        return
+    }
+
+    $allowedTargets = @('master', 'AdventureGearAI')
+    $commands = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true)
+    foreach ($command in $commands) {
+        $elements = @($command.CommandElements)
+        for ($i = 0; $i -lt $elements.Count; $i++) {
+            $element = $elements[$i]
+            if ($element -isnot [System.Management.Automation.Language.CommandParameterAst] -or
+                $element.ParameterName -ine 'Database') {
+                continue
+            }
+
+            $argument = $element.Argument
+            if ($null -eq $argument -and ($i + 1) -lt $elements.Count) {
+                $argument = $elements[$i + 1]
+            }
+
+            $lineNumber = $element.Extent.StartLineNumber
+            if ($null -eq $argument -or $argument -is [System.Management.Automation.Language.CommandParameterAst]) {
+                Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$lineNumber is missing a -Database target."
+                continue
+            }
+
+            if ($argument -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$lineNumber database target must be the literal master or AdventureGearAI value. Found: $($argument.Extent.Text)"
+                continue
+            }
+
+            $databaseTarget = $argument.Value
+            if ($databaseTarget -notin $allowedTargets) {
+                Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$lineNumber uses a forbidden database target: $databaseTarget"
+            }
+        }
+    }
+}
+
+function Test-BootstrapSqlScope {
+    param([string]$Path)
+
+    $text = Get-FileText -Path $Path
+    if ($null -eq $text) {
+        return
+    }
+
+    $legacyCommandPattern = '(?im)^\s*(?<Command>CREATE\s+DATABASE|ALTER\s+DATABASE|DROP\s+DATABASE(?:\s+IF\s+EXISTS)?|USE)\s+(?<Target>\[[^\]\r\n]+\]|"[^"\r\n]+"|''[^''\r\n]+''|[^\s;\r\n]+)'
+    foreach ($match in [regex]::Matches($text, $legacyCommandPattern)) {
+        $legacyTarget = Normalize-DatabaseTargetToken -Target $match.Groups['Target'].Value
+        if ($legacyTarget -match '^DP800_M\d{2}$') {
+            $lineNumber = Get-LineNumberFromIndex -Text $text -Index $match.Index
+            Add-Failure "Bootstrap SQL asset $(Resolve-RepoPath -Path $Path):$lineNumber still targets legacy database $legacyTarget via $($match.Groups['Command'].Value.ToUpperInvariant())."
+        }
+    }
+
+    $legacyDatabaseNameConstructionPattern = '(?im)^\s*(?:DECLARE|SET|SELECT)\s+(?<Variable>@\w*database\w*)\b[^\r\n]*DP800_M'
+    foreach ($match in [regex]::Matches($text, $legacyDatabaseNameConstructionPattern)) {
+        $lineNumber = Get-LineNumberFromIndex -Text $text -Index $match.Index
+        Add-Failure "Bootstrap SQL asset $(Resolve-RepoPath -Path $Path):$lineNumber still constructs a legacy DP800_Mxx database name in $($match.Groups['Variable'].Value)."
+    }
+
+    $legacyDynamicSqlPattern = '(?im)^\s*(?:DECLARE|SET|SELECT)\s+(?<Variable>@\w*sql\w*)\b[^\r\n]*\b(?:CREATE|ALTER|DROP)\s+DATABASE\b[^\r\n]*DP800_M'
+    foreach ($match in [regex]::Matches($text, $legacyDynamicSqlPattern)) {
+        $lineNumber = Get-LineNumberFromIndex -Text $text -Index $match.Index
+        Add-Failure "Bootstrap SQL asset $(Resolve-RepoPath -Path $Path):$lineNumber still builds a legacy DP800_Mxx database command in $($match.Groups['Variable'].Value)."
+    }
 }
 
 function Test-FullResetScope {
@@ -187,7 +255,7 @@ $bootstrapScript = Join-Path $bootstrapRoot 'Invoke-Bootstrap.ps1'
 Test-PatternAbsent -Path $bootstrapScript -Pattern '00-create-databases\.sql' -FailureMessage 'Bootstrap script still uses the legacy eleven-database create script.'
 Test-PatternPresent -Path $bootstrapScript -Pattern '00-create-adventuregear-database\.sql' -FailureMessage 'Bootstrap script does not wire the AdventureGearAI create-database asset.'
 Test-PatternPresent -Path $bootstrapScript -Pattern '01-initialize-adventuregear-demo\.sql' -FailureMessage 'Bootstrap script does not wire the AdventureGearAI initialization asset.'
-Test-LegacyDatabaseTargetUsage -Path $bootstrapScript -Context 'Bootstrap script'
+Test-BootstrapScriptDatabaseTargets -Path $bootstrapScript
 
 $bootstrapSqlFiles = @(Get-ChildItem -Path $bootstrapRoot -File -Filter '*.sql' -ErrorAction SilentlyContinue)
 if ($bootstrapSqlFiles.Count -eq 0) {
@@ -195,7 +263,7 @@ if ($bootstrapSqlFiles.Count -eq 0) {
 }
 else {
     foreach ($sqlFile in $bootstrapSqlFiles) {
-        Test-PatternAbsent -Path $sqlFile.FullName -Pattern '(?is)CREATE\s+DATABASE.*DP800_M|DP800_M.*CREATE\s+DATABASE|WHILE\s+@ModuleNumber\s*<=\s*11.*DP800_M' -FailureMessage "Bootstrap SQL asset $(Resolve-RepoPath -Path $sqlFile.FullName) still implements the legacy eleven-database bootstrap."
+        Test-BootstrapSqlScope -Path $sqlFile.FullName
     }
 }
 
