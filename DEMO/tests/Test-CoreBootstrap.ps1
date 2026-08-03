@@ -151,14 +151,14 @@ if ($null -ne $bootstrapText) {
     }
 }
 
-# --- Behavioral guards (run the script; both must fail before any DB work) ------
-$guardModules = & pwsh -NoProfile -File $bootstrapScript -Modules 1 2>&1 | Out-String
-if ($LASTEXITCODE -eq 0) {
-    Add-Failure 'Invoke-Bootstrap must fail when -Modules is non-empty (module runner not available yet).'
-}
-elseif ($guardModules -notmatch 'per-module runner is not available') {
-    Add-Failure "Invoke-Bootstrap -Modules failure message is not explicit. Output: $guardModules"
-}
+# --- Behavioral guards -----------------------------------------------------------
+# Module execution is now wired to the dependency-aware runner (Task 3). The
+# bootstrap must delegate to Invoke-DemoModule.ps1 after core init rather than
+# throwing, so assert the wiring statically (executing it would require a live
+# database) and confirm the old "not available" guard message is gone.
+Assert-Present -Text $bootstrapText -Pattern 'Invoke-DemoModule\.ps1' -Message 'Invoke-Bootstrap must delegate module execution to Invoke-DemoModule.ps1.'
+Assert-Present -Text $bootstrapText -Pattern '(?i)-SkipCoreBootstrap' -Message 'Invoke-Bootstrap must call the module runner with -SkipCoreBootstrap to avoid recursion.'
+Assert-Absent -Text $bootstrapText -Pattern 'per-module runner is not available' -Message 'Invoke-Bootstrap must no longer throw the retired "per-module runner is not available" message.'
 
 $guardDatabase = & pwsh -NoProfile -File $bootstrapScript -Database ReportingSandbox 2>&1 | Out-String
 if ($LASTEXITCODE -eq 0) {

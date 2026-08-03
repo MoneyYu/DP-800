@@ -15,25 +15,37 @@ if ($Database -ne 'AdventureGearAI') {
     throw "The unified demo provisions only the AdventureGearAI database; '$Database' is not a supported target."
 }
 
-# A per-module runner is not available yet in this task. Fail explicitly when
-# module execution is requested so the contract is clear for the later runner.
-if ($Modules.Count -gt 0) {
-    throw "Modules were requested ($($Modules -join ', ')), but the per-module runner is not available yet. Re-run without -Modules to provision the AdventureGearAI core; module execution is wired in a later task."
-}
-
+# A per-module runner handles module execution. When modules are requested we
+# initialize the core below and then delegate to Invoke-DemoModule.ps1. The
+# runner invokes this bootstrap without -Modules to ensure the core, so there is
+# no recursion.
 $demoRoot = Split-Path -Parent $PSScriptRoot
 $runner = Join-Path $demoRoot 'scripts\Invoke-Dp800Sql.ps1'
+$moduleRunner = Join-Path $demoRoot 'scripts\Invoke-DemoModule.ps1'
 
 Write-Host 'Provisioning the AdventureGearAI unified demo database...'
 
 # 1) Create the single AdventureGearAI database from master (idempotent).
 & $runner -Server $Server -User $User -Database master -InputFile (Join-Path $PSScriptRoot '00-create-adventuregear-database.sql')
 
-# 2) Initialize schemas, operational tracking, and the ecommerce core inside AdventureGearAI (idempotent).
-& $runner -Server $Server -User $User -Database AdventureGearAI -InputFile (Join-Path $PSScriptRoot '01-initialize-adventuregear-demo.sql')
+# 2) Initialize schemas, operational tracking, and the ecommerce core inside
+#    AdventureGearAI (idempotent). This trusted bootstrap path creates the very
+#    marker the database guard checks, so the guard is intentionally skipped.
+& $runner -Server $Server -User $User -Database AdventureGearAI -SkipDatabaseGuard -InputFile (Join-Path $PSScriptRoot '01-initialize-adventuregear-demo.sql')
 
 # 3) Report (never drop) any legacy DP800_Mxx databases as manual cleanup candidates.
 Write-Host 'Checking for legacy per-module databases (reported as manual cleanup candidates only; never dropped automatically)...'
 & $runner -Server $Server -User $User -Database master -InputFile (Join-Path $PSScriptRoot 'report-legacy-databases.sql')
 
 Write-Host 'AdventureGearAI core bootstrap complete.'
+
+# 4) When modules are requested, delegate to the dependency-aware runner after
+#    the core exists. -SkipCoreBootstrap prevents the runner from re-invoking
+#    this bootstrap (the core was just provisioned above).
+if ($Modules.Count -gt 0) {
+    Write-Host "Delegating module execution to the runner for: $((@($Modules) | ForEach-Object { 'M{0:d2}' -f $_ }) -join ', ')"
+    & pwsh -NoProfile -File $moduleRunner -Server $Server -User $User -Modules $Modules -SkipCoreBootstrap
+    if ($LASTEXITCODE -ne 0) {
+        throw "Module runner failed with exit code $LASTEXITCODE."
+    }
+}

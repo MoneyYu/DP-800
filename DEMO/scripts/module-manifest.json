@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0.0",
+  "description": "Setup ownership manifest for the AdventureGearAI unified demo module runner. Each module lists the setup scripts that the runner is allowed to execute, grouped by scope (common, local, azure). Script paths are resolved relative to this manifest file's directory. A module is only executed when 'ready' is true; until a module's demos are migrated to AdventureGearAI domain schemas, 'ready' remains false so the runner refuses to run legacy per-database scripts against AdventureGearAI. The runner executes common+local setup for local runs and never executes azure scripts locally. Interactive M06 blocker/deadlock/observer scripts are intentionally excluded from the local setup list.",
+  "scopePolicy": {
+    "local": ["common", "local"],
+    "azureExcludedFromLocal": true
+  },
+  "modules": [
+    { "module": 1,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 2,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 3,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 4,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 5,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 6,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 7,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 8,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 9,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 10, "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
+    { "module": 11, "ready": false, "setup": { "common": [], "local": [], "azure": [] } }
+  ]
+}
