@@ -1,0 +1,28 @@
+name: Build and deploy DP-800 SQL project
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "DEMO/M07/common/Dp800.Database/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.x"
+      - name: Build
+        run: dotnet build DEMO/M07/common/Dp800.Database/Dp800.Database.sqlproj
+      - name: Deploy
+        uses: azure/sql-action@v2.3
+        with:
+          connection-string: ${{ secrets.SQL_CONNECTION_STRING }}
+          path: DEMO/M07/common/Dp800.Database/bin/Debug/Dp800.Database.dacpac
+          action: publish

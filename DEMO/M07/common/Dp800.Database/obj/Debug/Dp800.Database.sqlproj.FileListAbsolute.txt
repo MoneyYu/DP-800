@@ -1,0 +1,5 @@
+C:\Source\Repos\DP-800\DEMO\M07\common\Dp800.Database\bin\Debug\Dp800.Database.dacpac
+C:\Source\Repos\DP-800\DEMO\M07\common\Dp800.Database\obj\Debug\Model.xml
+C:\Source\Repos\DP-800\DEMO\M07\common\Dp800.Database\obj\Debug\refactor.xml
+C:\Source\Repos\DP-800\DEMO\M07\common\Dp800.Database\obj\Debug\postdeploy.sql
+C:\Source\Repos\DP-800\DEMO\M07\common\Dp800.Database\obj\Debug\predeploy.sql
