@@ -42,10 +42,12 @@ Write-Host 'AdventureGearAI core bootstrap complete.'
 # 4) When modules are requested, delegate to the dependency-aware runner after
 #    the core exists. -SkipCoreBootstrap prevents the runner from re-invoking
 #    this bootstrap (the core was just provisioned above).
+#
+#    The runner is dot-sourced into the current process so that the [int[]]
+#    $Modules array is passed intact — spawning a child pwsh -File process
+#    causes multi-element arrays to be serialized/concatenated and lose values.
 if ($Modules.Count -gt 0) {
     Write-Host "Delegating module execution to the runner for: $((@($Modules) | ForEach-Object { 'M{0:d2}' -f $_ }) -join ', ')"
-    & pwsh -NoProfile -File $moduleRunner -Server $Server -User $User -Modules $Modules -SkipCoreBootstrap
-    if ($LASTEXITCODE -ne 0) {
-        throw "Module runner failed with exit code $LASTEXITCODE."
-    }
+    . $moduleRunner
+    Invoke-DemoModuleRunner -Server $Server -User $User -Modules $Modules -SkipCoreBootstrap
 }

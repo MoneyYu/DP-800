@@ -159,6 +159,10 @@ if ($null -ne $bootstrapText) {
 Assert-Present -Text $bootstrapText -Pattern 'Invoke-DemoModule\.ps1' -Message 'Invoke-Bootstrap must delegate module execution to Invoke-DemoModule.ps1.'
 Assert-Present -Text $bootstrapText -Pattern '(?i)-SkipCoreBootstrap' -Message 'Invoke-Bootstrap must call the module runner with -SkipCoreBootstrap to avoid recursion.'
 Assert-Absent -Text $bootstrapText -Pattern 'per-module runner is not available' -Message 'Invoke-Bootstrap must no longer throw the retired "per-module runner is not available" message.'
+# Hybrid integration guard: no child pwsh process for module delegation (int[] would be serialized/lost).
+Assert-Absent -Text $bootstrapText -Pattern '(?i)pwsh[^\n]*-File[^\n]*Invoke-DemoModule' -Message 'Invoke-Bootstrap must NOT use pwsh -File to delegate modules (multi-element [int[]] values would be concatenated/lost at the process boundary).'
+Assert-Present -Text $bootstrapText -Pattern '(?i)\.\s+\$moduleRunner' -Message 'Invoke-Bootstrap must dot-source $moduleRunner to keep [int[]] intact in the current process.'
+Assert-Present -Text $bootstrapText -Pattern '(?i)Invoke-DemoModuleRunner\s' -Message 'Invoke-Bootstrap must call Invoke-DemoModuleRunner directly after dot-sourcing the runner.'
 
 $guardDatabase = & pwsh -NoProfile -File $bootstrapScript -Database ReportingSandbox 2>&1 | Out-String
 if ($LASTEXITCODE -eq 0) {

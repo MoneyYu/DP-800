@@ -314,7 +314,7 @@ function Invoke-DemoModuleRunner {
     if ($Database -ne 'AdventureGearAI') {
         throw "The unified demo runner targets only the AdventureGearAI database; '$Database' is not supported."
     }
-    if (-not $Modules -or $Modules.Count -eq 0) {
+    if ($null -eq $Modules -or $Modules.Count -eq 0) {
         throw 'No modules were requested. Provide -Modules with values in 1..11.'
     }
     foreach ($module in $Modules) {

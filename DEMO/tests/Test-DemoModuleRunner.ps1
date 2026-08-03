@@ -184,6 +184,46 @@ try {
     Set-Content -LiteralPath $missingManifestPath -Value ($missingManifest | ConvertTo-Json -Depth 6) -NoNewline
     $readyMissing = Read-DemoModuleManifest -Path $missingManifestPath
     Assert-Throws -Action { Get-DemoModuleSetupScripts -Manifest $readyMissing -Module 7 -Scope local } -Pattern 'does not exist \(incompatible manifest\)' -Message 'A ready module whose script is missing must fail as an incompatible manifest.'
+
+    # --- 8) Hybrid integration: Bootstrap delegates via dot-source, not child process ---------
+    # The bug: & pwsh -File passes [int[]] as a concatenated string, losing elements.
+    # The fix: Invoke-Bootstrap.ps1 must dot-source Invoke-DemoModule.ps1 and call
+    # Invoke-DemoModuleRunner directly so [int[]] is passed intact.
+    Write-Host ''
+    Write-Host '--- Section 8: Hybrid integration - Bootstrap dot-source delegation'
+    $bootstrapSource = Get-Text -Path $bootstrapScript
+    # Must NOT spawn a child process to invoke the module runner.
+    Assert-Absent -Text $bootstrapSource -Pattern '(?i)pwsh[^`n]*-File[^`n]*Invoke-DemoModule' -Message 'Invoke-Bootstrap must NOT spawn a child pwsh -File process to invoke the module runner (multi-element int[] values would be lost).'
+    # Must dot-source the runner file (preserves [int[]] in current process).
+    Assert-Present -Text $bootstrapSource -Pattern '(?i)\.\s+\$moduleRunner' -Message 'Invoke-Bootstrap must dot-source $moduleRunner to preserve [int[]] across the boundary.'
+    # Must call Invoke-DemoModuleRunner directly (not via & pwsh -File).
+    Assert-Present -Text $bootstrapSource -Pattern '(?i)Invoke-DemoModuleRunner\s' -Message 'Invoke-Bootstrap must call Invoke-DemoModuleRunner directly after dot-sourcing.'
+
+    # --- 9) [int[]] integrity: multi-element module resolution via Resolve-DemoModuleExecutionPlan ------
+    # Requesting M02, M09, M11 must resolve the full transitive closure and return
+    # them in dependency order: M01 (base), M02, M09, M10 (M11 depends on M10),
+    # M11.  This exercises exactly the scenario that the child-process bug breaks.
+    Write-Host '--- Section 9: [int[]] multi-element array resolution - Modules 2,9,11'
+    $plan2_9_11 = @(Resolve-DemoModuleExecutionPlan -Requested @(2, 9, 11))
+    Assert-Equal -Actual ($plan2_9_11 -join ',') -Expected '1,2,9,10,11' `
+        -Message 'Requesting M02,M09,M11 must resolve transitive closure 1,2,9,10,11 in dependency order.'
+    Assert-True -Condition ($plan2_9_11.Count -eq 5) `
+        -Message 'Requesting M02,M09,M11 must return 5 modules in the execution plan (not 1 due to array serialization loss).'
+    Assert-True -Condition ($plan2_9_11[0] -eq 1) -Message 'First module in plan for M02,M09,M11 must be M01 (base dependency).'
+    Assert-True -Condition ($plan2_9_11[-1] -eq 11) -Message 'Last module in plan for M02,M09,M11 must be M11 (terminal dependency).'
+
+    # --- 10) Invalid values rejected by Invoke-DemoModuleRunner ----------------------
+    Write-Host '--- Section 10: Invalid module values rejected'
+    # Invoke-DemoModuleRunner validates before any DB call, so these must throw.
+    Assert-Throws -Action {
+        Invoke-DemoModuleRunner -Modules @(12) -ManifestPath $missingManifestPath
+    } -Pattern 'Invalid module number' -Message 'Invoke-DemoModuleRunner must reject module number 12 (> 11).'
+    Assert-Throws -Action {
+        Invoke-DemoModuleRunner -Modules @(0) -ManifestPath $missingManifestPath
+    } -Pattern 'Invalid module number' -Message 'Invoke-DemoModuleRunner must reject module number 0 (< 1).'
+    Assert-Throws -Action {
+        Invoke-DemoModuleRunner -Modules @(1, 99) -ManifestPath $missingManifestPath
+    } -Pattern 'Invalid module number' -Message 'Invoke-DemoModuleRunner must reject any invalid element in a mixed valid/invalid array.'
 }
 finally {
     if (Test-Path -LiteralPath $sandboxRoot) { Remove-Item -LiteralPath $sandboxRoot -Recurse -Force }
