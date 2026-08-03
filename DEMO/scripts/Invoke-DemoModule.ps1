@@ -338,9 +338,37 @@ function Invoke-DemoModuleRunner {
     Write-Host "Requested modules: $((@($Modules) | ForEach-Object { 'M{0:d2}' -f $_ }) -join ', ')"
     Write-Host "Resolved execution plan (dependency order): $((@($plan) | ForEach-Object { 'M{0:d2}' -f $_ }) -join ', ')"
 
+    # ---------------------------------------------------------------------------
+    # Password resolution: prefer DP800_SQL_PASSWORD, then existing SQLCMDPASSWORD,
+    # else prompt once via a secure read. The plaintext is stored only in
+    # SQLCMDPASSWORD (process scope) for the duration of this runner; it is
+    # restored to its original value in the finally block.
+    # ---------------------------------------------------------------------------
+    $originalSqlCmdPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
+    $temporaryPassword = $null
+
+    if ($env:DP800_SQL_PASSWORD) {
+        $temporaryPassword = $env:DP800_SQL_PASSWORD
+    }
+    elseif ($env:SQLCMDPASSWORD) {
+        $temporaryPassword = $env:SQLCMDPASSWORD
+    }
+    else {
+        $securePassword = Read-Host 'SQL password' -AsSecureString
+        $credential = [pscredential]::new($User, $securePassword)
+        $temporaryPassword = $credential.GetNetworkCredential().Password
+    }
+
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $temporaryPassword, 'Process')
+
+    try {
+
     # Ensure the AdventureGearAI core (database, schemas, marker, state rows).
     # The runner invokes the core-only bootstrap (no -Modules), so it never
-    # recurses back into this runner.
+    # recurses back into this runner. The bootstrap subprocess inherits
+    # SQLCMDPASSWORD; DP800_SQL_PASSWORD is also inherited so the bootstrap
+    # can resolve the password via its own Invoke-Dp800Sql calls without
+    # prompting again.
     if (-not $SkipCoreBootstrap) {
         Write-Host 'Ensuring AdventureGearAI core bootstrap exists...'
         & pwsh -NoProfile -File $coreBootstrap -Server $Server -User $User -Database $Database
@@ -367,6 +395,8 @@ function Invoke-DemoModuleRunner {
             $setupScripts = Get-DemoModuleSetupScripts -Manifest $manifest -Module $module -Scope 'local'
             foreach ($script in $setupScripts) {
                 Write-Host "${moduleName}: running setup script $(Split-Path -Leaf $script)"
+                # The subprocess inherits SQLCMDPASSWORD set above, so Invoke-Dp800Sql
+                # will resolve it from that env var without prompting.
                 & pwsh -NoProfile -File $sqlRunner -Server $Server -User $User -Database $Database -InputFile $script
                 if ($LASTEXITCODE -ne 0) {
                     throw "Setup script '$script' failed with exit code $LASTEXITCODE."
@@ -391,6 +421,12 @@ function Invoke-DemoModuleRunner {
     }
 
     Write-Host 'Module runner completed successfully.' -ForegroundColor Green
+
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalSqlCmdPassword, 'Process')
+        $temporaryPassword = $null
+    }
 }
 
 # Only run the main body when executed as a script (pwsh -File / &). When the

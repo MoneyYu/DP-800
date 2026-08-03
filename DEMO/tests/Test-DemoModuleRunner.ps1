@@ -80,6 +80,19 @@ try {
     Assert-Present -Text $sqlRunnerText -Pattern "(?i)Assert-DemoDatabase\.sql" -Message 'Invoke-Dp800Sql must run the Assert-DemoDatabase.sql guard.'
     Assert-Present -Text $sqlRunnerText -Pattern "(?i)Database\s+-ne\s+'master'\s+-and\s+-not\s+\`$SkipDatabaseGuard" -Message 'Invoke-Dp800Sql must guard every non-master target unless explicitly skipped.'
 
+    # --- 2b) Runner password-resolution static assertions --------------------
+    # Verify Invoke-DemoModule.ps1 implements the same resolution semantics as
+    # Invoke-Dp800Sql.ps1: DP800_SQL_PASSWORD preferred, then SQLCMDPASSWORD,
+    # then secure prompt; SQLCMDPASSWORD set only in process scope; finally restores.
+    $runnerText = Get-Text -Path $runnerScript
+    Assert-Present -Text $runnerText -Pattern "(?i)DP800_SQL_PASSWORD" -Message 'Runner must reference DP800_SQL_PASSWORD for password resolution.'
+    Assert-Present -Text $runnerText -Pattern "(?i)env:DP800_SQL_PASSWORD" -Message 'Runner must prefer $env:DP800_SQL_PASSWORD as primary password source.'
+    Assert-Present -Text $runnerText -Pattern "(?i)env:SQLCMDPASSWORD" -Message 'Runner must fall back to $env:SQLCMDPASSWORD when DP800_SQL_PASSWORD is absent.'
+    Assert-Present -Text $runnerText -Pattern "(?i)Read-Host.*AsSecureString" -Message 'Runner must fall back to a secure prompt when no env var is set.'
+    Assert-Present -Text $runnerText -Pattern "(?i)SetEnvironmentVariable\('SQLCMDPASSWORD'" -Message 'Runner must set SQLCMDPASSWORD in the process scope for sqlcmd state calls.'
+    Assert-Present -Text $runnerText -Pattern "(?i)\[Environment\]::SetEnvironmentVariable\('SQLCMDPASSWORD',\s*\`$originalSqlCmdPassword" -Message 'Runner must restore the original SQLCMDPASSWORD value in the finally block.'
+    Assert-Present -Text $runnerText -Pattern "(?i)\`$temporaryPassword\s*=\s*\`$null" -Message 'Runner must clear the temporary plaintext password in the finally block.'
+
     # --- 3) State-transition SQL (secure, no arbitrary interpolation) ---------
     $runningSql = Get-DemoModuleStateUpdateSql -Module 9 -Status 'Running'
     Assert-Present -Text $runningSql -Pattern "Status=N'Running'" -Message 'Running transition must set Status=Running.'

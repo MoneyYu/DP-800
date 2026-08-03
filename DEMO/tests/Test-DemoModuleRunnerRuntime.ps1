@@ -61,6 +61,11 @@ $testedModules = @(1, 9, 10, 11)
 $stateSnapshot = @{}
 
 try {
+    # DP800_SQL_PASSWORD is set; SQLCMDPASSWORD is cleared so runner subprocesses
+    # must resolve the password solely from the documented primary env var.
+    # Invoke-Query helpers call sqlcmd inline in the current process and need
+    # SQLCMDPASSWORD, so it is restored after each runner subprocess call and
+    # cleared again before the next one.
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     [Environment]::SetEnvironmentVariable('DP800_SQL_PASSWORD', $password, 'Process')
 
@@ -112,7 +117,10 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
     $failManifest = New-Manifest -Name 'fail-manifest.json' -ModuleToScript @{ 1 = 'good-setup.sql'; 9 = 'good-setup.sql'; 10 = 'bad-setup.sql'; 11 = 'good-setup.sql' }
 
     # --- Scenario A: first run of M11 resolves M01/M09/M10/M11 and Completes ---
+    # Clear SQLCMDPASSWORD so the runner subprocess must resolve via DP800_SQL_PASSWORD.
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $null, 'Process')
     $runOutput = & pwsh -NoProfile -File $runnerScript -Server $Server -User $User -Modules 11 -ManifestPath $goodManifest 2>&1 | Out-String
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     if ($LASTEXITCODE -ne 0) { Add-Failure "First runner run (M11) exited non-zero. Output: $runOutput" }
     if ($runOutput -notmatch 'M01, M09, M10, M11') { Add-Failure "Runner did not report the resolved plan M01,M09,M10,M11. Output: $runOutput" }
     foreach ($module in 1, 9, 10, 11) {
@@ -123,14 +131,18 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
     if ($countAfterFirst -ne 4) { Add-Failure "First run should execute 4 setup scripts; probe count is $countAfterFirst (expected 4)." }
 
     # --- Scenario B: rerun without -Force skips all Completed modules ----------
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $null, 'Process')
     $rerunOutput = & pwsh -NoProfile -File $runnerScript -Server $Server -User $User -Modules 11 -ManifestPath $goodManifest 2>&1 | Out-String
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     if ($LASTEXITCODE -ne 0) { Add-Failure "Rerun (M11) exited non-zero. Output: $rerunOutput" }
     if ($rerunOutput -notmatch 'already Completed; skipping') { Add-Failure "Rerun should skip Completed modules. Output: $rerunOutput" }
     $countAfterRerun = Get-ProbeCount
     if ($countAfterRerun -ne 4) { Add-Failure "Rerun should skip (no new executions); probe count is $countAfterRerun (expected 4)." }
 
     # --- Scenario C: -Force re-runs all resolved modules ----------------------
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $null, 'Process')
     $forceOutput = & pwsh -NoProfile -File $runnerScript -Server $Server -User $User -Modules 11 -Force -ManifestPath $goodManifest 2>&1 | Out-String
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     if ($LASTEXITCODE -ne 0) { Add-Failure "Force rerun (M11) exited non-zero. Output: $forceOutput" }
     foreach ($module in 1, 9, 10, 11) {
         $status = Get-ModuleStatus -Module $module
@@ -141,7 +153,9 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
 
     # --- Scenario D: a failing setup marks the module Failed and rethrows -----
     Invoke-Query -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; UPDATE ops.DemoModuleState SET Status=N'NotStarted', StartedAtUtc=NULL, CompletedAtUtc=NULL, LastError=NULL, UpdatedAtUtc=SYSUTCDATETIME() WHERE ModuleNumber IN (1,9,10,11);" | Out-Null
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $null, 'Process')
     $failOutput = & pwsh -NoProfile -File $runnerScript -Server $Server -User $User -Modules 11 -ManifestPath $failManifest 2>&1 | Out-String
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     if ($LASTEXITCODE -eq 0) { Add-Failure "Runner must exit non-zero when a module setup fails. Output: $failOutput" }
     $m10Status = Get-ModuleStatus -Module 10
     if ($m10Status -ne 'Failed') { Add-Failure "M10 status after failure is '$m10Status' (expected Failed)." }
@@ -156,7 +170,10 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
     }
 
     # --- Scenario E: wrong-database guard blocks execution --------------------
+    # Invoke-Dp800Sql also resolves DP800_SQL_PASSWORD; test with SQLCMDPASSWORD cleared.
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $null, 'Process')
     $guardOutput = & pwsh -NoProfile -File $sqlRunnerScript -Server $Server -User $User -Database tempdb -InputFile $goodSql 2>&1 | Out-String
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     if ($LASTEXITCODE -eq 0) { Add-Failure "Database guard must block a non-AdventureGearAI target. Output: $guardOutput" }
     if ($guardOutput -notmatch 'guard failed|Database guard failed') { Add-Failure "Guard failure message was not explicit. Output: $guardOutput" }
 
