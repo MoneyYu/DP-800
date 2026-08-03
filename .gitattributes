@@ -1,1 +1,25 @@
+# Normalize repository text while keeping retained course assets byte-for-byte.
+* text=auto
+
+*.md text eol=lf
+*.txt text eol=lf
+*.tf text eol=lf
+*.sql text eol=lf
+*.ps1 text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+*.pptx binary
+*.bak binary
+*.bacpac binary
+*.tar binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+
+# Preserve the existing Git LFS rule if this retained backup is restored.
 DEMO/DB/AdventureWorks2022.bak filter=lfs diff=lfs merge=lfs -text

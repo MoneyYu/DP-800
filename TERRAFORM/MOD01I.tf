@@ -1,6 +1,8 @@
 ## MOD-01-I-AUTOMATION
 
 resource "azurerm_automation_account" "lab01i" {
+  count = var.enable_operations ? 1 : 0
+
   name                = "${local.lab01_name}-automation-${local.random_str}"
   location            = azurerm_resource_group.dp300.location
   resource_group_name = azurerm_resource_group.dp300.name
@@ -14,19 +16,23 @@ resource "azurerm_automation_account" "lab01i" {
 }
 
 resource "azurerm_automation_credential" "lab01i_sqladmin" {
+  count = var.enable_operations && var.enable_azure_sql_gallery && var.enable_azure_services_firewall_demo ? 1 : 0
+
   name                    = "sql-maint-admin"
   resource_group_name     = azurerm_resource_group.dp300.name
-  automation_account_name = azurerm_automation_account.lab01i.name
-  username                = var.user_name
-  password                = var.user_passowrd
+  automation_account_name = azurerm_automation_account.lab01i[0].name
+  username                = local.effective_admin_username
+  password                = local.effective_admin_password
   description             = "SQL admin credential for scheduled maintenance runbook."
 }
 
 # Runbook keeps Azure SQL DB statistics refreshed and validates integrity.
 resource "azurerm_automation_runbook" "lab01i_sql_maintenance" {
+  count = var.enable_operations && var.enable_azure_sql_gallery && var.enable_azure_services_firewall_demo ? 1 : 0
+
   name                    = "sql-maintenance"
   resource_group_name     = azurerm_resource_group.dp300.name
-  automation_account_name = azurerm_automation_account.lab01i.name
+  automation_account_name = azurerm_automation_account.lab01i[0].name
   location                = azurerm_resource_group.dp300.location
   log_progress            = true
   log_verbose             = true
@@ -40,38 +46,64 @@ resource "azurerm_automation_runbook" "lab01i_sql_maintenance" {
       [Parameter(Mandatory = $true)]
       [string] $databasename,
       [Parameter(Mandatory = $true)]
-      [string] $credentialname
+      [string] $credentialname,
+      [Parameter(Mandatory = $true)]
+      [ValidateSet("SqlPassword", "ManagedIdentity")]
+      [string] $authenticationmode
     )
 
-    $cred = Get-AutomationPSCredential -Name $credentialname
-    if (-not $cred) {
-      throw "Credential $credentialname not found."
+    $connection = New-Object System.Data.SqlClient.SqlConnection
+
+    if ($authenticationmode -eq "ManagedIdentity") {
+      # Requires a contained external database user for the Automation account
+      # system-assigned identity before this path is selected.
+      Disable-AzContextAutosave -Scope Process | Out-Null
+      Connect-AzAccount -Identity | Out-Null
+      $token = (Get-AzAccessToken -ResourceUrl "https://database.windows.net/").Token
+      if ($token -is [System.Security.SecureString]) {
+        $token = [System.Net.NetworkCredential]::new("", $token).Password
+      }
+      $connection.ConnectionString = "Server=tcp:$serverfqdn,1433;Database=$databasename;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+      $connection.AccessToken = $token
+    }
+    else {
+      $cred = Get-AutomationPSCredential -Name $credentialname
+      if (-not $cred) {
+        throw "Credential $credentialname not found."
+      }
+
+      $builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+      $builder["Data Source"] = "tcp:$serverfqdn,1433"
+      $builder["Initial Catalog"] = $databasename
+      $builder["User ID"] = $cred.UserName
+      $builder["Password"] = $cred.GetNetworkCredential().Password
+      $builder["Encrypt"] = $true
+      $builder["TrustServerCertificate"] = $false
+      $builder["Connect Timeout"] = 30
+      $connection.ConnectionString = $builder.ConnectionString
     }
 
-    $connectionString = "Server=tcp:$serverfqdn,1433;Database=$databasename;User ID=$($cred.UserName);Password=$($cred.GetNetworkCredential().Password);Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
-
     $queries = @(
-        "SET NOCOUNT ON; EXEC sp_updatestats;",
-        "SET NOCOUNT ON; DBCC CHECKDB WITH NO_INFOMSGS;"
+      "SET NOCOUNT ON; EXEC sp_updatestats;",
+      "SET NOCOUNT ON; DBCC CHECKDB WITH NO_INFOMSGS;"
     )
 
-    $connection = New-Object System.Data.SqlClient.SqlConnection $connectionString
     $command = $connection.CreateCommand()
 
     try {
-        $connection.Open()
-        foreach ($query in $queries) {
-            $command.CommandText = $query
-            $command.ExecuteNonQuery() | Out-Null
-        }
-        Write-Output "Maintenance completed for $databasename on $(Get-Date -Format o)"
+      $connection.Open()
+      foreach ($query in $queries) {
+        $command.CommandText = $query
+        $command.ExecuteNonQuery() | Out-Null
+      }
+      Write-Output "Maintenance completed for $databasename on $(Get-Date -Format o)"
     }
     catch {
-        Write-Error "Maintenance failed: $($_.Exception.Message)"
-        throw
+      Write-Error "Maintenance failed: $($_.Exception.Message)"
+      throw
     }
     finally {
-        $connection.Close()
+      $connection.Close()
     }
   POWERSHELL
 
@@ -79,9 +111,11 @@ resource "azurerm_automation_runbook" "lab01i_sql_maintenance" {
 }
 
 resource "azurerm_automation_schedule" "lab01i_daily" {
+  count = var.enable_operations && var.enable_azure_sql_gallery && var.enable_azure_services_firewall_demo ? 1 : 0
+
   name                    = "sql-maintenance-daily"
   resource_group_name     = azurerm_resource_group.dp300.name
-  automation_account_name = azurerm_automation_account.lab01i.name
+  automation_account_name = azurerm_automation_account.lab01i[0].name
   frequency               = "Day"
   interval                = 1
   timezone                = "Asia/Taipei"
@@ -90,14 +124,17 @@ resource "azurerm_automation_schedule" "lab01i_daily" {
 }
 
 resource "azurerm_automation_job_schedule" "lab01i_sql_maintenance" {
+  count = var.enable_operations && var.enable_azure_sql_gallery && var.enable_azure_services_firewall_demo ? 1 : 0
+
   resource_group_name     = azurerm_resource_group.dp300.name
-  automation_account_name = azurerm_automation_account.lab01i.name
-  schedule_name           = azurerm_automation_schedule.lab01i_daily.name
-  runbook_name            = azurerm_automation_runbook.lab01i_sql_maintenance.name
+  automation_account_name = azurerm_automation_account.lab01i[0].name
+  schedule_name           = azurerm_automation_schedule.lab01i_daily[0].name
+  runbook_name            = azurerm_automation_runbook.lab01i_sql_maintenance[0].name
 
   parameters = {
-    serverfqdn     = azurerm_mssql_server.lab01.fully_qualified_domain_name
-    databasename   = azurerm_mssql_database.lab01d02.name
-    credentialname = azurerm_automation_credential.lab01i_sqladmin.name
+    serverfqdn         = azurerm_mssql_server.lab01[0].fully_qualified_domain_name
+    databasename       = azurerm_mssql_database.lab01d02[0].name
+    credentialname     = azurerm_automation_credential.lab01i_sqladmin[0].name
+    authenticationmode = "SqlPassword"
   }
 }
