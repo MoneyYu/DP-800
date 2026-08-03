@@ -16,6 +16,7 @@ $expectedBootstrapAssets = @(
     Join-Path $bootstrapRoot '01-initialize-adventuregear-demo.sql'
 )
 $expectedFullReset = Join-Path $demoRoot 'reset\Reset-AdventureGearAI.ps1'
+$expectedFullResetSql = Join-Path $demoRoot 'reset\reset-adventuregear.sql'
 $expectedDabObjects = @{
     Category = 'api.Categories'
     Product = 'api.Products'
@@ -84,9 +85,33 @@ function Test-PatternAbsent {
     }
 }
 
-function Test-ReadmeExecutionTargets {
+$script:legacyCleanupProseMarkers = @(
+    'legacy'
+    'manual cleanup'
+    'not automatically deleted'
+    'not automatically dropped'
+    'never automatically dropped'
+    'never dropped'
+)
+
+function Test-IsLegacyCleanupProse {
+    param([string]$Line)
+
+    foreach ($marker in $script:legacyCleanupProseMarkers) {
+        if ($Line -match [regex]::Escape($marker)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-ReadmeLegacyTargets {
     param([string]$Path)
 
+    # Conservative default-deny: any DP800_Mxx reference in a README is treated as a
+    # forbidden execution/connection/database target unless the same line explicitly
+    # labels it as legacy manual cleanup that is never automatically deleted.
     $lines = Get-Content -LiteralPath $Path
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
@@ -94,13 +119,11 @@ function Test-ReadmeExecutionTargets {
             continue
         }
 
-        $isExecutionTarget = $line -match '(?i)^\s*Run\b.*\bagainst\s+`?DP800_M\d{2}`?' -or
-            $line -match '(?i)-Database\s+`?DP800_M\d{2}`?' -or
-            $line -match '(?i)^\s*pwsh\b.*DP800_M\d{2}'
-
-        if ($isExecutionTarget) {
-            Add-Failure "Execution README $(Resolve-RepoPath -Path $Path):$($i + 1) still uses a DP800_Mxx execution target."
+        if (Test-IsLegacyCleanupProse -Line $line) {
+            continue
         }
+
+        Add-Failure "Execution README $(Resolve-RepoPath -Path $Path):$($i + 1) references a DP800_Mxx target outside permitted legacy-cleanup prose."
     }
 }
 
@@ -139,8 +162,11 @@ function Normalize-DatabaseTargetToken {
     return $Target.Trim().Trim('[', ']', '"', '''', '`', ';')
 }
 
-function Test-BootstrapScriptDatabaseTargets {
-    param([string]$Path)
+function Test-LiteralDatabaseTargets {
+    param(
+        [string]$Path,
+        [string]$Label = 'Bootstrap script'
+    )
 
     $text = Get-FileText -Path $Path
     if ($null -eq $text) {
@@ -152,7 +178,7 @@ function Test-BootstrapScriptDatabaseTargets {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
     if ($parseErrors.Count -gt 0) {
         foreach ($parseError in $parseErrors) {
-            Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$($parseError.Extent.StartLineNumber) could not be parsed: $($parseError.Message)"
+            Add-Failure "$Label $(Resolve-RepoPath -Path $Path):$($parseError.Extent.StartLineNumber) could not be parsed: $($parseError.Message)"
         }
         return
     }
@@ -175,21 +201,61 @@ function Test-BootstrapScriptDatabaseTargets {
 
             $lineNumber = $element.Extent.StartLineNumber
             if ($null -eq $argument -or $argument -is [System.Management.Automation.Language.CommandParameterAst]) {
-                Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$lineNumber is missing a -Database target."
+                Add-Failure "$Label $(Resolve-RepoPath -Path $Path):$lineNumber is missing a -Database target."
                 continue
             }
 
             if ($argument -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) {
-                Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$lineNumber database target must be the literal master or AdventureGearAI value. Found: $($argument.Extent.Text)"
+                Add-Failure "$Label $(Resolve-RepoPath -Path $Path):$lineNumber database target must be the literal master or AdventureGearAI value. Found: $($argument.Extent.Text)"
                 continue
             }
 
             $databaseTarget = $argument.Value
             if ($databaseTarget -notin $allowedTargets) {
-                Add-Failure "Bootstrap script $(Resolve-RepoPath -Path $Path):$lineNumber uses a forbidden database target: $databaseTarget"
+                Add-Failure "$Label $(Resolve-RepoPath -Path $Path):$lineNumber uses a forbidden database target: $databaseTarget"
             }
         }
     }
+}
+
+function Test-SqlBuildsLegacyName {
+    param([string]$Text)
+
+    # A legacy DP800_Mxx name is "constructed" when the literal participates in
+    # variable assignment or string concatenation, rather than only being reported
+    # by a comment or a plain PRINT statement. This intentionally ignores variable
+    # names so @db/@cmd style scripts cannot slip through.
+    foreach ($line in ($Text -split "\r?\n")) {
+        if ($line -notmatch 'DP800_M') {
+            continue
+        }
+
+        $trimmed = $line.TrimStart()
+        if ($trimmed.StartsWith('--')) {
+            continue
+        }
+
+        if ($trimmed -match '(?i)^PRINT\b' -and $trimmed -notmatch '(?i)(=|\+|CONCAT|QUOTENAME|FORMATMESSAGE|STRING_AGG)') {
+            continue
+        }
+
+        if ($line -match '(?i)(=|\+|CONCAT|QUOTENAME|FORMATMESSAGE|STRING_AGG)') {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-SqlDynamicDatabaseExecution {
+    param([string]$Text)
+
+    $hasDynamicExec = $Text -match '(?im)\bsp_executesql\b' -or $Text -match '(?im)\bEXEC(UTE)?\s*[\(@]'
+    if (-not $hasDynamicExec) {
+        return $false
+    }
+
+    return [bool]($Text -match '(?i)(CREATE|ALTER|DROP|USE)\s+DATABASE')
 }
 
 function Test-BootstrapSqlScope {
@@ -209,41 +275,142 @@ function Test-BootstrapSqlScope {
         }
     }
 
-    $legacyDatabaseNameConstructionPattern = '(?im)^\s*(?:DECLARE|SET|SELECT)\s+(?<Variable>@\w*database\w*)\b[^\r\n]*DP800_M'
-    foreach ($match in [regex]::Matches($text, $legacyDatabaseNameConstructionPattern)) {
-        $lineNumber = Get-LineNumberFromIndex -Text $text -Index $match.Index
-        Add-Failure "Bootstrap SQL asset $(Resolve-RepoPath -Path $Path):$lineNumber still constructs a legacy DP800_Mxx database name in $($match.Groups['Variable'].Value)."
+    # Conservative dynamic check: reject only when the script both constructs a
+    # legacy DP800_Mxx name and executes a database DDL command via EXEC/sp_executesql.
+    # A static legacy candidate in a PRINT or comment (no dynamic execution) passes.
+    if ((Test-SqlBuildsLegacyName -Text $text) -and (Test-SqlDynamicDatabaseExecution -Text $text)) {
+        $lineNumber = 1
+        $legacyMatch = [regex]::Match($text, 'DP800_M')
+        if ($legacyMatch.Success) {
+            $lineNumber = Get-LineNumberFromIndex -Text $text -Index $legacyMatch.Index
+        }
+
+        Add-Failure "Bootstrap SQL asset $(Resolve-RepoPath -Path $Path):$lineNumber dynamically constructs and executes a legacy DP800_Mxx database command via EXEC/sp_executesql."
+    }
+}
+
+function Get-InputFileArguments {
+    param([System.Management.Automation.Language.Ast]$Ast)
+
+    $arguments = [System.Collections.Generic.List[object]]::new()
+    $commands = $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true)
+    foreach ($command in $commands) {
+        $elements = @($command.CommandElements)
+        for ($i = 0; $i -lt $elements.Count; $i++) {
+            $element = $elements[$i]
+            if ($element -isnot [System.Management.Automation.Language.CommandParameterAst] -or
+                $element.ParameterName -ine 'InputFile') {
+                continue
+            }
+
+            $argument = $element.Argument
+            if ($null -eq $argument -and ($i + 1) -lt $elements.Count) {
+                $argument = $elements[$i + 1]
+            }
+
+            $arguments.Add([pscustomobject]@{
+                Argument = $argument
+                LineNumber = $element.Extent.StartLineNumber
+            })
+        }
     }
 
-    $legacyDynamicSqlPattern = '(?im)^\s*(?:DECLARE|SET|SELECT)\s+(?<Variable>@\w*sql\w*)\b[^\r\n]*\b(?:CREATE|ALTER|DROP)\s+DATABASE\b[^\r\n]*DP800_M'
-    foreach ($match in [regex]::Matches($text, $legacyDynamicSqlPattern)) {
-        $lineNumber = Get-LineNumberFromIndex -Text $text -Index $match.Index
-        Add-Failure "Bootstrap SQL asset $(Resolve-RepoPath -Path $Path):$lineNumber still builds a legacy DP800_Mxx database command in $($match.Groups['Variable'].Value)."
+    return $arguments
+}
+
+function Test-ResetWrapperReference {
+    param(
+        [string]$Path,
+        [string]$ExpectedAssetLeaf
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) {
+        foreach ($parseError in $parseErrors) {
+            Add-Failure "Full reset wrapper $(Resolve-RepoPath -Path $Path):$($parseError.Extent.StartLineNumber) could not be parsed: $($parseError.Message)"
+        }
+        return
+    }
+
+    Test-LiteralDatabaseTargets -Path $Path -Label 'Full reset wrapper'
+
+    $referencesExpectedAsset = $false
+    foreach ($inputFile in Get-InputFileArguments -Ast $ast) {
+        $argument = $inputFile.Argument
+        $sqlLiterals = @()
+        if ($argument -is [System.Management.Automation.Language.Ast]) {
+            $sqlLiterals = @($argument.FindAll({ param($node)
+                $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $node.Value -match '(?i)\.sql$'
+            }, $true))
+        }
+
+        if ($sqlLiterals.Count -eq 0) {
+            Add-Failure "Full reset wrapper $(Resolve-RepoPath -Path $Path):$($inputFile.LineNumber) references a non-literal reset SQL path; it must pass the literal $ExpectedAssetLeaf asset to -InputFile."
+            continue
+        }
+
+        foreach ($literal in $sqlLiterals) {
+            if ([System.IO.Path]::GetFileName($literal.Value) -ieq $ExpectedAssetLeaf) {
+                $referencesExpectedAsset = $true
+            }
+        }
+    }
+
+    if (-not $referencesExpectedAsset) {
+        Add-Failure "Full reset wrapper $(Resolve-RepoPath -Path $Path) does not reference the literal $ExpectedAssetLeaf asset via -InputFile."
+    }
+}
+
+function Test-ResetSqlAsset {
+    param([string]$Path)
+
+    $text = Get-FileText -Path $Path
+    if ($null -eq $text) {
+        return
+    }
+
+    if ($text -notmatch 'AdventureGearAI') {
+        Add-Failure "Full reset SQL asset $(Resolve-RepoPath -Path $Path) is not hard-scoped to AdventureGearAI."
+    }
+
+    if (Test-SqlDynamicDatabaseExecution -Text $text) {
+        Add-Failure "Full reset SQL asset $(Resolve-RepoPath -Path $Path) uses dynamic destructive SQL (EXEC/sp_executesql) instead of literal AdventureGearAI statements."
+    }
+
+    $destructiveTargetPattern = '(?im)^\s*(?<Command>ALTER\s+DATABASE|DROP\s+DATABASE(?:\s+IF\s+EXISTS)?)\s+(?<Target>\[[^\]\r\n]+\]|"[^"\r\n]+"|''[^''\r\n]+''|`[^`\r\n]+`|[^\s;\r\n]+)'
+    foreach ($match in [regex]::Matches($text, $destructiveTargetPattern)) {
+        $command = $match.Groups['Command'].Value.ToUpperInvariant()
+        $rawTarget = $match.Groups['Target'].Value.Trim()
+        $normalizedTarget = Normalize-DatabaseTargetToken -Target $rawTarget
+
+        if ($normalizedTarget -ne 'AdventureGearAI') {
+            $lineNumber = Get-LineNumberFromIndex -Text $text -Index $match.Index
+            Add-Failure "Full reset SQL asset $(Resolve-RepoPath -Path $Path):$lineNumber $command target must be the literal AdventureGearAI database. Found: $rawTarget"
+        }
     }
 }
 
 function Test-FullResetScope {
-    param([string]$Path)
+    param(
+        [string]$WrapperPath,
+        [string]$SqlAssetPath
+    )
 
-    $fullResetText = Get-FileText -Path $Path
-    if ($null -eq $fullResetText) {
+    $wrapperText = Get-FileText -Path $WrapperPath
+    if ($null -eq $wrapperText) {
         return
     }
 
-    if ($fullResetText -notmatch 'AdventureGearAI') {
-        Add-Failure 'Full reset script is not hard-scoped to AdventureGearAI.'
+    Test-ResetWrapperReference -Path $WrapperPath -ExpectedAssetLeaf 'reset-adventuregear.sql'
+
+    if (-not (Test-Path -LiteralPath $SqlAssetPath -PathType Leaf)) {
+        Add-Failure "Expected full reset SQL asset is missing: $(Resolve-RepoPath -Path $SqlAssetPath)"
+        return
     }
 
-    $destructiveTargetPattern = '(?im)^\s*(?<Command>ALTER\s+DATABASE|DROP\s+DATABASE(?:\s+IF\s+EXISTS)?)\s+(?<Target>\[[^\]\r\n]+\]|"[^"\r\n]+"|''[^''\r\n]+''|`[^`\r\n]+`|[^\s;\r\n]+)'
-    foreach ($match in [regex]::Matches($fullResetText, $destructiveTargetPattern)) {
-        $command = $match.Groups['Command'].Value.ToUpperInvariant()
-        $rawTarget = $match.Groups['Target'].Value.Trim()
-        $normalizedTarget = $rawTarget.Trim('[', ']', '"', '''', '`')
-
-        if ($normalizedTarget -ne 'AdventureGearAI') {
-            Add-Failure "Full reset script $command target must be the literal AdventureGearAI database. Found: $rawTarget"
-        }
-    }
+    Test-ResetSqlAsset -Path $SqlAssetPath
 }
 
 Write-Host 'Unified demo regression harness'
@@ -255,7 +422,7 @@ $bootstrapScript = Join-Path $bootstrapRoot 'Invoke-Bootstrap.ps1'
 Test-PatternAbsent -Path $bootstrapScript -Pattern '00-create-databases\.sql' -FailureMessage 'Bootstrap script still uses the legacy eleven-database create script.'
 Test-PatternPresent -Path $bootstrapScript -Pattern '00-create-adventuregear-database\.sql' -FailureMessage 'Bootstrap script does not wire the AdventureGearAI create-database asset.'
 Test-PatternPresent -Path $bootstrapScript -Pattern '01-initialize-adventuregear-demo\.sql' -FailureMessage 'Bootstrap script does not wire the AdventureGearAI initialization asset.'
-Test-BootstrapScriptDatabaseTargets -Path $bootstrapScript
+Test-LiteralDatabaseTargets -Path $bootstrapScript -Label 'Bootstrap script'
 
 $bootstrapSqlFiles = @(Get-ChildItem -Path $bootstrapRoot -File -Filter '*.sql' -ErrorAction SilentlyContinue)
 if ($bootstrapSqlFiles.Count -eq 0) {
@@ -297,31 +464,30 @@ foreach ($definition in @($opsDefinitionsFound.Keys)) {
     }
 }
 
-$executionReadmes = [System.Collections.Generic.List[string]]::new()
 $topLevelReadme = Join-Path $demoRoot 'README.md'
 if (-not (Test-Path -LiteralPath $topLevelReadme -PathType Leaf)) {
     Add-Failure 'Missing DEMO\README.md.'
-}
-else {
-    $executionReadmes.Add($topLevelReadme)
 }
 
 foreach ($moduleDirectory in $moduleDirectories) {
     $moduleReadme = Join-Path $moduleDirectory.FullName 'README.md'
     if (-not (Test-Path -LiteralPath $moduleReadme -PathType Leaf)) {
         Add-Failure "Missing module README: $(Resolve-RepoPath -Path $moduleReadme)"
-        continue
     }
-
-    $executionReadmes.Add($moduleReadme)
 }
 
-if ($executionReadmes.Count -eq 0) {
-    Add-Failure 'No demo execution README files were found.'
+$testsRoot = Join-Path $demoRoot 'tests'
+$readmeFiles = @(
+    Get-ChildItem -Path $demoRoot -Recurse -File -Filter 'README.md' -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.FullName.StartsWith($testsRoot, [System.StringComparison]::OrdinalIgnoreCase) }
+)
+
+if ($readmeFiles.Count -eq 0) {
+    Add-Failure 'No demo README files were found.'
 }
 else {
-    foreach ($readme in $executionReadmes) {
-        Test-ReadmeExecutionTargets -Path $readme
+    foreach ($readme in $readmeFiles) {
+        Test-ReadmeLegacyTargets -Path $readme.FullName
     }
 }
 
@@ -402,10 +568,10 @@ else {
 }
 
 if (-not (Test-Path -LiteralPath $expectedFullReset -PathType Leaf)) {
-    Add-Failure "Expected full reset script is missing: $(Resolve-RepoPath -Path $expectedFullReset)"
+    Add-Failure "Expected full reset wrapper is missing: $(Resolve-RepoPath -Path $expectedFullReset)"
 }
 else {
-    Test-FullResetScope -Path $expectedFullReset
+    Test-FullResetScope -WrapperPath $expectedFullReset -SqlAssetPath $expectedFullResetSql
 }
 
 $terraformChanges = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)

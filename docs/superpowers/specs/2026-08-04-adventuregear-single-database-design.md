@@ -120,6 +120,12 @@ Future implementation work must introduce this full reset entry point:
 
 - `DEMO/reset/Reset-AdventureGearAI.ps1`
 
+The full reset wrapper is a thin PowerShell orchestrator: it connects with `-Database master` and runs its destructive work from a single, known literal SQL asset:
+
+- `DEMO/reset/reset-adventuregear.sql`
+
+The regression harness inspects both the wrapper and this SQL asset. It rejects a non-literal reset SQL path, dynamic destructive SQL (`EXEC`/`sp_executesql`), and any literal `ALTER DATABASE`/`DROP DATABASE` target other than `AdventureGearAI`.
+
 No reset flow may automatically drop legacy `DP800_Mxx` databases.
 
 ---
@@ -169,14 +175,14 @@ The harness is intentionally **RED** at this task boundary because the repositor
 
 Required RED checks include:
 
-- bootstrap still must be migrated away from `DP800_Mxx`
+- bootstrap still must be migrated away from `DP800_Mxx` (including dynamic `EXEC`/`sp_executesql` name construction)
 - AdventureGearAI bootstrap assets are not yet present
 - marker/state definitions are not yet present
-- module README targets still mention `DP800_Mxx`
+- README targets still mention `DP800_Mxx` (harness scans every README recursively under `DEMO`, excluding `DEMO/tests`, and only permits explicit legacy manual-cleanup prose)
 - module resets still use `DROP DATABASE`
 - DAB still targets `dbo.ApiProducts` and `dbo.ApiCategories`
 - the SQL publish profile still targets `DP800_M07`
-- the full reset entry point does not yet exist
+- the full reset entry point (`Reset-AdventureGearAI.ps1` wrapper plus its `reset-adventuregear.sql` asset) does not yet exist
 
 ---
 
