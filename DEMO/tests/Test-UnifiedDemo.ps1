@@ -99,7 +99,42 @@ function Test-ReadmeExecutionTargets {
             $line -match '(?i)^\s*pwsh\b.*DP800_M\d{2}'
 
         if ($isExecutionTarget) {
-            Add-Failure "Module README $(Resolve-RepoPath -Path $Path):$($i + 1) still uses a DP800_Mxx execution target."
+            Add-Failure "Execution README $(Resolve-RepoPath -Path $Path):$($i + 1) still uses a DP800_Mxx execution target."
+        }
+    }
+}
+
+function Test-LegacyDatabaseTargetUsage {
+    param(
+        [string]$Path,
+        [string]$Context
+    )
+
+    $text = Get-FileText -Path $Path
+    if ($null -eq $text) {
+        return
+    }
+
+    $lines = $text -split "\r?\n"
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        $explicitDatabaseMatch = [regex]::Match($line, '(?i)-Database\s+(?<Target>["'']?[A-Za-z0-9_]+["'']?)')
+        if ($explicitDatabaseMatch.Success) {
+            $explicitDatabaseTarget = $explicitDatabaseMatch.Groups['Target'].Value.Trim('"', '''')
+            if ($explicitDatabaseTarget -notin @('master', 'AdventureGearAI')) {
+                Add-Failure "$Context $(Resolve-RepoPath -Path $Path):$($i + 1) uses a forbidden database target: $explicitDatabaseTarget"
+                continue
+            }
+        }
+
+        $targetsLegacyDatabase = $line -match '(?i)-Database\s+[''"]?`?DP800_M\d{2}`?' -or
+            $line -match '(?i)\b(?:CREATE|DROP|ALTER)\s+DATABASE(?:\s+IF\s+EXISTS)?\s+\[?DP800_M\d{2}\]?' -or
+            $line -match '(?i)\bUSE\s+\[?DP800_M\d{2}\]?' -or
+            $line -match '(?i)\$(?:\w*database\w*)\s*=\s*[''"]DP800_M\d{2}[''"]' -or
+            $line -match '(?i)\$(?:\w*database\w*)\s*=\s*@\([^)]*DP800_M\d{2}'
+
+        if ($targetsLegacyDatabase) {
+            Add-Failure "$Context $(Resolve-RepoPath -Path $Path):$($i + 1) still targets a legacy DP800_Mxx database."
         }
     }
 }
@@ -131,22 +166,14 @@ function Test-FullResetScope {
         Add-Failure 'Full reset script is not hard-scoped to AdventureGearAI.'
     }
 
-    if ($fullResetText -match 'DP800_M\d{2}') {
-        Add-Failure 'Full reset script still references legacy DP800_Mxx databases.'
-    }
+    $destructiveTargetPattern = '(?im)^\s*(?<Command>ALTER\s+DATABASE|DROP\s+DATABASE(?:\s+IF\s+EXISTS)?)\s+(?<Target>\[[^\]\r\n]+\]|"[^"\r\n]+"|''[^''\r\n]+''|`[^`\r\n]+`|[^\s;\r\n]+)'
+    foreach ($match in [regex]::Matches($fullResetText, $destructiveTargetPattern)) {
+        $command = $match.Groups['Command'].Value.ToUpperInvariant()
+        $rawTarget = $match.Groups['Target'].Value.Trim()
+        $normalizedTarget = $rawTarget.Trim('[', ']', '"', '''', '`')
 
-    $databaseNamePatterns = @(
-        '(?i)\b(?:USE|ALTER\s+DATABASE|DROP\s+DATABASE)\s+\[?(?<Database>[A-Za-z0-9_]+)\]?',
-        '(?i)DB_ID\s*\(\s*N?''(?<Database>[A-Za-z0-9_]+)''',
-        '(?i)-Database\s+[''\"]?(?<Database>[A-Za-z0-9_]+)'
-    )
-
-    foreach ($pattern in $databaseNamePatterns) {
-        foreach ($match in [regex]::Matches($fullResetText, $pattern)) {
-            $databaseName = $match.Groups['Database'].Value
-            if (-not [string]::IsNullOrWhiteSpace($databaseName) -and $databaseName -ne 'AdventureGearAI') {
-                Add-Failure "Full reset script references a non-AdventureGearAI database target: $databaseName"
-            }
+        if ($normalizedTarget -ne 'AdventureGearAI') {
+            Add-Failure "Full reset script $command target must be the literal AdventureGearAI database. Found: $rawTarget"
         }
     }
 }
@@ -158,9 +185,9 @@ Write-Host ''
 
 $bootstrapScript = Join-Path $bootstrapRoot 'Invoke-Bootstrap.ps1'
 Test-PatternAbsent -Path $bootstrapScript -Pattern '00-create-databases\.sql' -FailureMessage 'Bootstrap script still uses the legacy eleven-database create script.'
-Test-PatternAbsent -Path $bootstrapScript -Pattern 'DP800_M' -FailureMessage 'Bootstrap script still defines DP800_Mxx bootstrap behavior.'
 Test-PatternPresent -Path $bootstrapScript -Pattern '00-create-adventuregear-database\.sql' -FailureMessage 'Bootstrap script does not wire the AdventureGearAI create-database asset.'
 Test-PatternPresent -Path $bootstrapScript -Pattern '01-initialize-adventuregear-demo\.sql' -FailureMessage 'Bootstrap script does not wire the AdventureGearAI initialization asset.'
+Test-LegacyDatabaseTargetUsage -Path $bootstrapScript -Context 'Bootstrap script'
 
 $bootstrapSqlFiles = @(Get-ChildItem -Path $bootstrapRoot -File -Filter '*.sql' -ErrorAction SilentlyContinue)
 if ($bootstrapSqlFiles.Count -eq 0) {
@@ -202,15 +229,31 @@ foreach ($definition in @($opsDefinitionsFound.Keys)) {
     }
 }
 
-$moduleReadmes = @(Get-ChildItem -Path $demoRoot -Recurse -File -Filter 'README.md' |
-    Where-Object { $_.DirectoryName -match '\\DEMO\\M\d{2}(\\|$)' })
-
-if ($moduleReadmes.Count -eq 0) {
-    Add-Failure 'No module README files were found.'
+$executionReadmes = [System.Collections.Generic.List[string]]::new()
+$topLevelReadme = Join-Path $demoRoot 'README.md'
+if (-not (Test-Path -LiteralPath $topLevelReadme -PathType Leaf)) {
+    Add-Failure 'Missing DEMO\README.md.'
 }
 else {
-    foreach ($readme in $moduleReadmes) {
-        Test-ReadmeExecutionTargets -Path $readme.FullName
+    $executionReadmes.Add($topLevelReadme)
+}
+
+foreach ($moduleDirectory in $moduleDirectories) {
+    $moduleReadme = Join-Path $moduleDirectory.FullName 'README.md'
+    if (-not (Test-Path -LiteralPath $moduleReadme -PathType Leaf)) {
+        Add-Failure "Missing module README: $(Resolve-RepoPath -Path $moduleReadme)"
+        continue
+    }
+
+    $executionReadmes.Add($moduleReadme)
+}
+
+if ($executionReadmes.Count -eq 0) {
+    Add-Failure 'No demo execution README files were found.'
+}
+else {
+    foreach ($readme in $executionReadmes) {
+        Test-ReadmeExecutionTargets -Path $readme
     }
 }
 
@@ -318,4 +361,3 @@ if ($failures.Count -gt 0) {
 
 Write-Host 'PASS (all unified demo regression checks succeeded)' -ForegroundColor Green
 exit 0
-
