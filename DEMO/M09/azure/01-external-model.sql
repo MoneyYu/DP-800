@@ -4,11 +4,11 @@
 SET NOCOUNT ON;
 GO
 
-IF EXISTS (SELECT 1 FROM sys.external_models WHERE name = N'DP800_EmbeddingModel')
-    DROP EXTERNAL MODEL DP800_EmbeddingModel;
+IF EXISTS (SELECT 1 FROM sys.external_models WHERE name = N'AdventureGearEmbeddingModel')
+    DROP EXTERNAL MODEL AdventureGearEmbeddingModel;
 GO
 
-CREATE EXTERNAL MODEL DP800_EmbeddingModel
+CREATE EXTERNAL MODEL AdventureGearEmbeddingModel
 WITH
 (
     LOCATION = 'https://$(AzureOpenAIEndpointName).openai.azure.com/openai/deployments/$(EmbeddingDeploymentName)/embeddings?api-version=2024-10-21',

@@ -6,7 +6,6 @@ BEGIN
     SELECT N'ANN setup skipped' AS Result, N'The vector data type is unavailable in this target database.' AS Reason;
     RETURN;
 END;
-
 BEGIN TRY
     EXEC sys.sp_executesql N'ALTER DATABASE SCOPED CONFIGURATION SET PREVIEW_FEATURES = ON;';
 END TRY
@@ -29,10 +28,10 @@ END CATCH;
 
 BEGIN TRY
     EXEC sys.sp_executesql N'
-        IF COL_LENGTH(N''dbo.SearchDocuments'', N''SearchVector'') IS NULL
-            ALTER TABLE dbo.SearchDocuments ADD SearchVector vector(3) NULL;
+        IF COL_LENGTH(N''search.SearchDocuments'', N''SearchVector'') IS NULL
+            ALTER TABLE search.SearchDocuments ADD SearchVector vector(3) NULL;
 
-        UPDATE dbo.SearchDocuments
+        UPDATE search.SearchDocuments
         SET SearchVector =
             CASE
                 WHEN ProductName LIKE N''%Tire%'' THEN CAST(''[1,0,0]'' AS vector(3))
@@ -40,9 +39,9 @@ BEGIN TRY
                 ELSE CAST(''[0,0,1]'' AS vector(3))
             END;
 
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N''dbo.SearchDocuments'') AND name = N''IX_DP800_SearchVector'')
-            CREATE VECTOR INDEX IX_DP800_SearchVector
-            ON dbo.SearchDocuments(SearchVector)
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N''search.SearchDocuments'') AND name = N''IX_AdventureGear_SearchVector'')
+            CREATE VECTOR INDEX IX_AdventureGear_SearchVector
+            ON search.SearchDocuments(SearchVector)
             WITH (METRIC = ''cosine'', TYPE = ''DISKANN'');
 
         DECLARE @QueryVector vector(3) = CAST(''[1,0,0]'' AS vector(3));
@@ -50,7 +49,7 @@ BEGIN TRY
             ProductName,
             DocumentText,
             VECTOR_DISTANCE(''cosine'', @QueryVector, SearchVector) AS VectorDistance
-        FROM dbo.SearchDocuments
+        FROM search.SearchDocuments
         ORDER BY VectorDistance;';
     SELECT N'ANN vector index and approximate search executed.' AS Result;
 END TRY

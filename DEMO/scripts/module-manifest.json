@@ -12,10 +12,10 @@
     { "module": 4,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
     { "module": 5,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
     { "module": 6,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 7,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 8,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 9,  "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 10, "ready": false, "setup": { "common": [], "local": [], "azure": [] } },
-    { "module": 11, "ready": false, "setup": { "common": [], "local": [], "azure": [] } }
+    { "module": 7,  "ready": true,  "setup": { "common": ["../M07/common/01-inventory-deployment-log.sql"], "local": [], "azure": [] } },
+    { "module": 8,  "ready": true,  "setup": { "common": ["../M08/common/01-product-api.sql"], "local": [], "azure": [] } },
+    { "module": 9,  "ready": true,  "setup": { "common": ["../M09/common/01-review-data.sql"], "local": ["../M09/local/01-feature-detection.sql"], "azure": ["../M09/azure/01-external-model.sql"] } },
+    { "module": 10, "ready": true,  "setup": { "common": ["../M10/common/01-search-data.sql"], "local": ["../M10/local/01-search.sql"], "azure": ["../M10/azure/01-ann-search.sql"] } },
+    { "module": 11, "ready": true,  "setup": { "common": ["../M11/common/01-local-rag.sql"], "local": ["../M11/local/01-build-prompt.sql"], "azure": ["../M11/azure/01-rag-procedure.sql"] } }
   ]
 }

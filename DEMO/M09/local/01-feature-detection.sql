@@ -8,17 +8,17 @@ SELECT
 DECLARE @VectorSupported bit = 0;
 BEGIN TRY
     EXEC sys.sp_executesql N'
-        DROP TABLE IF EXISTS dbo.VectorFeatureProbe;
-        CREATE TABLE dbo.VectorFeatureProbe
+        DROP TABLE IF EXISTS ai.VectorFeatureProbe;
+        CREATE TABLE ai.VectorFeatureProbe
         (
             ProbeID int NOT NULL PRIMARY KEY,
             Embedding vector(3) NULL
         );
-        INSERT dbo.VectorFeatureProbe (ProbeID, Embedding)
+        INSERT ai.VectorFeatureProbe (ProbeID, Embedding)
         VALUES (1, CAST(''[1,0,0]'' AS vector(3)));
         SELECT ProbeID, VECTORPROPERTY(Embedding, ''Dimensions'') AS Dimensions
-        FROM dbo.VectorFeatureProbe;
-        DROP TABLE dbo.VectorFeatureProbe;';
+        FROM ai.VectorFeatureProbe;
+        DROP TABLE ai.VectorFeatureProbe;';
     SET @VectorSupported = 1;
 END TRY
 BEGIN CATCH

@@ -1,5 +1,19 @@
 # M10 — Full-text, vector, and hybrid search
 
-Run `common/01-search-data.sql`, then `local/01-search.sql` against `DP800_M10`.
+Provision and run search against **AdventureGearAI** with the unified runner:
 
-Full-text installation and vector syntax are detected independently. The common script expands the five base reviews into 100 fictional search documents so DiskANN meets its minimum vector count. The local script executes what the installed build supports and emits the actual skip reason for the rest. The Azure path uses DiskANN with the current `SELECT TOP (...) WITH APPROXIMATE` query syntax because preview/GA behavior can differ from SQL Server 2025.
+```powershell
+pwsh -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 10
+```
+
+The runner executes `common/01-search-data.sql` (which builds
+`search.SearchDocuments` from `customer.ProductReviews` joined to
+`catalog.Products`, expanding the base reviews into 100+ vectorized documents so
+DiskANN meets its minimum vector count) and then `local/01-search.sql`.
+
+Full-text installation and vector syntax are detected independently. The local
+script performs full-text search, EXACT vector search (`VECTOR_DISTANCE`), and
+hybrid Reciprocal Rank Fusion, emitting the actual skip reason for anything the
+installed build does not support. The Azure path (`azure/01-ann-search.sql`) adds
+the DiskANN vector index and uses the current `SELECT TOP (...) WITH APPROXIMATE`
+query syntax because preview/GA behavior can differ from local SQL Server 2025.
