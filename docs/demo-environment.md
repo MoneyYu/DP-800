@@ -118,7 +118,7 @@ The local path uses an existing container named `mssql2025`, managed outside thi
 
 The repository does not create, start, stop, delete, or persist the container. Never place the actual password in documentation, scripts, arguments, `.env`, or Git.
 
-[Invoke-Bootstrap.ps1](../DEMO/bootstrap/Invoke-Bootstrap.ps1) creates and seeds only `DP800_M01` through `DP800_M11`. Module reset scripts drop only their matching `DP800_` database. Unsupported or preview local features are detected and reported rather than assumed: the local path does not promise Azure external-model, DiskANN, managed-identity, or REST behavior.
+[Invoke-Bootstrap.ps1](../DEMO/bootstrap/Invoke-Bootstrap.ps1) creates and seeds a single `AdventureGearAI` database: the `catalog`/`sales`/`customer`/`security`/`ops`/`api`/`search`/`ai` domain schemas, the `ops.DemoEnvironment` marker and `ops.DemoModuleState` tracking tables, and the canonical AdventureGear ecommerce core. Modules run through the dependency-aware runner ([Invoke-DemoModule.ps1](../DEMO/scripts/Invoke-DemoModule.ps1)) against that same database, which resolves prerequisites (cumulative M01→M11) automatically. Module reset scripts remove only their own objects and leave the core intact; the only database-level reset ([Reset-AdventureGearAI.ps1](../DEMO/reset/Reset-AdventureGearAI.ps1)) is hard-scoped to the literal `AdventureGearAI`. Legacy per-module `DP800_Mxx` databases are never created or dropped automatically; they are only reported as manual cleanup candidates. Unsupported or preview local features are detected and reported rather than assumed: the local path does not promise Azure external-model, DiskANN, managed-identity, or REST behavior.
 
 ## Toggle-safe delivery patterns
 
