@@ -147,7 +147,7 @@ try {
         $sw.Stop()
 
         $status = if ($code -ne 0) { 'FAIL' }
-        elseif ($output -match '(?m)^\s*SKIP:') { 'SKIP' }
+        elseif ($output -match '(?m)^\s*SKIP:' -and $output -notmatch '(?m)^PASS \(') { 'SKIP' }
         else { 'PASS' }
 
         $color = switch ($status) { 'PASS' { 'Green' } 'FAIL' { 'Red' } default { 'Yellow' } }

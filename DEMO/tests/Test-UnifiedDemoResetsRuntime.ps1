@@ -149,6 +149,17 @@ try {
     foreach ($m in $moduleSignature.Keys) { Assert-Present -Object $moduleSignature[$m] }
     Assert-CoreIntact -Context 'after provisioning'
 
+    # M08 can leave its owned CDC capture active while M01 is force-reapplied.
+    # M01 must safely coordinate that lifecycle before replacing its XTP table.
+    $forceM01 = Invoke-Runner -Modules @(1) -Force
+    if ($forceM01.ExitCode -ne 0) { Add-Failure "Forced M01 reapply with M08 CDC exited non-zero. Output: $($forceM01.Output)" }
+    Assert-Present -Object 'catalog.ProductCacheInMemory'
+    Assert-Status -Module 1 -Expected 'Completed'
+    Assert-Status -Module 8 -Expected 'NotStarted'
+    $reapply8 = Invoke-Runner -Modules @(8)
+    if ($reapply8.ExitCode -ne 0) { Add-Failure "Reapply M08 after forced M01 reapply exited non-zero. Output: $($reapply8.Output)" }
+    Assert-Status -Module 8 -Expected 'Completed'
+
     # --- Phase 2: M10 reset marks M11 stale; M09 stays Completed -------------
     $r10 = Invoke-ModuleReset -Module 10
     if ($r10.ExitCode -ne 0) { Add-Failure "M10 reset exited non-zero. Output: $($r10.Output)" }
@@ -190,6 +201,19 @@ try {
     if ($r1.ExitCode -ne 0) { Add-Failure "M01 reset exited non-zero. Output: $($r1.Output)" }
     Assert-Absent -Object 'catalog.ProductPrice'
     Assert-Absent -Object 'sales.PartitionedOrders'
+    Assert-Absent -Object 'catalog.ProductJsonTeaching'
+    Assert-Absent -Object 'ops.InventoryLedger'
+    Assert-Absent -Object 'catalog.ProductSkuSequenceDemo'
+    Assert-Absent -Object 'catalog.ProductConstraintParent'
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsXTPSupported'));") -eq 1) {
+        Assert-Absent -Object 'catalog.ProductCacheInMemory'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsPolyBaseInstalled'));") -eq 1) {
+        Assert-Absent -Object 'catalog.ProductMetadataExternal'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.Products') AND name = N'IX_Products_ProductMetadata';") -ne 0) {
+        Add-Failure 'M01 reset must drop the native JSON index IX_Products_ProductMetadata.'
+    }
     if ((Get-Int "SET NOCOUNT ON; SELECT CASE WHEN COL_LENGTH('catalog.Products','MetadataFrame') IS NOT NULL THEN 1 ELSE 0 END;") -ne 0) { Add-Failure 'M01 reset must drop the catalog.Products.MetadataFrame computed column.' }
     foreach ($m in 2..11) { Assert-Status -Module $m -Expected 'NotStarted' }
     Assert-Status -Module 1 -Expected 'NotStarted'
@@ -201,6 +225,19 @@ try {
     $reapply1 = Invoke-Runner -Modules @(1)
     if ($reapply1.ExitCode -ne 0) { Add-Failure "Reapply M01 exited non-zero. Output: $($reapply1.Output)" }
     Assert-Present -Object 'catalog.ProductPrice'
+    Assert-Present -Object 'catalog.ProductJsonTeaching'
+    Assert-Present -Object 'ops.InventoryLedger'
+    Assert-Present -Object 'catalog.ProductSkuSequenceDemo'
+    Assert-Present -Object 'catalog.ProductConstraintParent'
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsXTPSupported'));") -eq 1) {
+        Assert-Present -Object 'catalog.ProductCacheInMemory'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsPolyBaseInstalled'));") -eq 1) {
+        Assert-Present -Object 'catalog.ProductMetadataExternal'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.Products') AND name = N'IX_Products_ProductMetadata';") -ne 1) {
+        Add-Failure 'M01 reapply must recreate the native JSON index IX_Products_ProductMetadata.'
+    }
     Assert-Status -Module 1 -Expected 'Completed'
     $reapply2 = Invoke-Runner -Modules @(2)
     if ($reapply2.ExitCode -ne 0) { Add-Failure "Reapply M02 exited non-zero. Output: $($reapply2.Output)" }

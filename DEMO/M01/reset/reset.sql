@@ -59,6 +59,99 @@ GO
    catalog.Products/catalog.Categories/sales.* core is never dropped.
    * 只依相依安全順序清除模組擁有的物件；標準核心不會被刪除。
 --------------------------------------------------------------------------- */
+/* CDC creates database-level DDL triggers that prevent dropping a
+   memory-optimized table. M08 is the only module that enables CDC. Coordinate
+   with its lifecycle lock, remove only its recorded capture, and disable
+   database CDC only when M08 enabled it and no other capture remains. */
+DECLARE @DisableCdcDatabase bit = 0;
+DECLARE @M08CaptureInstance sysname;
+DECLARE @M08CaptureTableObjectId int;
+DECLARE @M08CaptureTableCreatedAt datetime;
+DECLARE @ExpectedM08CaptureInstance sysname = N'AdventureGearM08Products';
+DECLARE @M08CaptureExists bit = 0;
+DECLARE @RemainingCaptureCount int = 0;
+DECLARE @CdcOwnershipLockResult int;
+DECLARE @CdcOwnershipLockHeld bit = 0;
+
+EXEC @CdcOwnershipLockResult = sys.sp_getapplock
+    @Resource = N'DP800.M08.CdcOwnership',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
+
+IF @CdcOwnershipLockResult < 0
+    THROW 51083, 'M01 reset could not acquire the CDC ownership lock.', 1;
+
+SET @CdcOwnershipLockHeld = 1;
+
+BEGIN TRY
+    IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NOT NULL
+        SELECT
+            @DisableCdcDatabase = DatabaseCdcEnabledByModule,
+            @M08CaptureInstance = M08CaptureInstance,
+            @M08CaptureTableObjectId = M08CaptureTableObjectId,
+            @M08CaptureTableCreatedAt = M08CaptureTableCreatedAt
+        FROM api.CdcRuntimeStatus
+        WHERE CdcRuntimeStatusID = 1;
+
+    IF @M08CaptureInstance = @ExpectedM08CaptureInstance
+       AND EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+    BEGIN
+        EXEC sys.sp_executesql
+            N'
+            SELECT @CaptureExists = CONVERT(bit, CASE WHEN EXISTS
+            (
+                SELECT 1
+                FROM cdc.change_tables
+                WHERE source_object_id = OBJECT_ID(N''catalog.Products'')
+                  AND capture_instance = @CaptureInstance
+                  AND OBJECT_ID(N''cdc.'' + capture_instance + N''_CT'') = @CaptureTableObjectId
+                  AND EXISTS
+                  (
+                      SELECT 1
+                      FROM sys.objects AS cdcTable
+                      WHERE cdcTable.object_id = @CaptureTableObjectId
+                        AND cdcTable.create_date = @CaptureTableCreatedAt
+                  )
+            ) THEN 1 ELSE 0 END);',
+            N'@CaptureInstance sysname, @CaptureTableObjectId int, @CaptureTableCreatedAt datetime, @CaptureExists bit OUTPUT',
+            @CaptureInstance = @ExpectedM08CaptureInstance,
+            @CaptureTableObjectId = @M08CaptureTableObjectId,
+            @CaptureTableCreatedAt = @M08CaptureTableCreatedAt,
+            @CaptureExists = @M08CaptureExists OUTPUT;
+
+        IF @M08CaptureExists = 1
+        BEGIN
+            EXEC sys.sp_cdc_disable_table
+                @source_schema = N'catalog',
+                @source_name = N'Products',
+                @capture_instance = @ExpectedM08CaptureInstance;
+
+            EXEC sys.sp_executesql
+                N'SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
+                N'@RemainingCount int OUTPUT',
+                @RemainingCount = @RemainingCaptureCount OUTPUT;
+
+            IF @DisableCdcDatabase = 1
+               AND @RemainingCaptureCount = 0
+                EXEC sys.sp_cdc_disable_db;
+        END;
+    END;
+
+    IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+        THROW 51084, 'M01 reset cannot remove its memory-optimized table while externally owned CDC remains enabled.', 1;
+END TRY
+BEGIN CATCH
+    IF @CdcOwnershipLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
+    THROW;
+END CATCH;
+
 IF OBJECT_ID(N'catalog.ProductRelatedTo', N'U') IS NOT NULL DROP TABLE catalog.ProductRelatedTo;
 IF OBJECT_ID(N'catalog.ProductNode', N'U') IS NOT NULL DROP TABLE catalog.ProductNode;
 
@@ -90,6 +183,13 @@ IF EXISTS (SELECT 1 FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.
 DROP TABLE IF EXISTS catalog.ProductJsonTeaching;
 
 DROP TABLE IF EXISTS catalog.ProductCacheInMemory;
+IF @CdcOwnershipLockHeld = 1
+BEGIN
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
+    SET @CdcOwnershipLockHeld = 0;
+END;
 
 /* Dropping an updatable ledger can retain an engine-managed dropped-ledger
    system table for verification. It is intentional and must not be removed.

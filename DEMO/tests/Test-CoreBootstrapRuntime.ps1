@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $bootstrapScript = Join-Path $repoRoot 'DEMO\bootstrap\Invoke-Bootstrap.ps1'
+$fullResetScript = Join-Path $repoRoot 'DEMO\reset\Reset-AdventureGearAI.ps1'
 
 $failures = [System.Collections.Generic.List[string]]::new()
 function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
@@ -101,11 +102,16 @@ try {
     $before = Get-DatabaseSet
     Write-Host "Databases before bootstrap: $($before.Count)"
 
-    # 2) Run bootstrap.
+    # 2) Start from a core-only database so M01 JSON indexes and computed
+    # columns cannot interfere with the native-json migration fixture.
+    & pwsh -NoProfile -File $fullResetScript -Server $Server -User $User | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Core bootstrap test setup full reset exited non-zero.' }
+
+    # 3) Run bootstrap.
     & pwsh -NoProfile -File $bootstrapScript -Server $Server -User $User | Out-Null
     if ($LASTEXITCODE -ne 0) { Add-Failure 'First bootstrap run exited non-zero.' }
 
-    # 3) Verify AdventureGearAI exists.
+    # 4) Verify AdventureGearAI exists.
     $after = Get-DatabaseSet
     if (-not $after.Contains('AdventureGearAI')) {
         Add-Failure 'AdventureGearAI database was not created.'

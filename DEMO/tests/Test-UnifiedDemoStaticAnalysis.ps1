@@ -125,7 +125,8 @@ foreach ($file in $scanFiles) {
     foreach ($match in [regex]::Matches($content, $credentialAssignment)) {
         $value = $match.Groups[1].Value
         if ($value -match '^\$' -or $value -match '^@' -or
-            $value -match '(?i)^(true|false)$' -or $value -match '(?i)replace|env\(') {
+            $value -match '(?i)^(true|false)$' -or $value -match '(?i)replace|env\(' -or
+            $value -match '^\[Environment\]::GetEnvironmentVariable\(') {
             continue
         }
         Add-Failure "Potential hardcoded credential in ${rel}: '$($match.Value.Trim())'."
