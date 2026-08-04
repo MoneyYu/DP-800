@@ -22,11 +22,13 @@ DROP SECURITY POLICY IF EXISTS security.CustomerRegionPolicy;
 DROP FUNCTION IF EXISTS security.fn_RegionFilter;
 DROP USER IF EXISTS AdventureGearMaskedReader;
 DROP USER IF EXISTS AdventureGearWestReader;
+DROP USER IF EXISTS AdventureGearPermissionReader;
+DROP PROCEDURE IF EXISTS security.usp_GetSecureCustomer;
 DROP TABLE IF EXISTS security.SecureCustomers;
 GO
 
 /* Secured companion projection of the canonical customers. The demo-only
-   GovernmentID / CreditLimit columns exist so masking functions have a column to
+   GovernmentID / CreditLimit / PrivateNote columns exist so masking functions have a column to
    * 建立標準客戶的安全伴隨投影，示範專用敏感欄位由 CustomerID 決定性產生。
    bind to; they are synthesized deterministically from the canonical CustomerID. */
 CREATE TABLE security.SecureCustomers
@@ -36,12 +38,13 @@ CREATE TABLE security.SecureCustomers
     Email nvarchar(200) MASKED WITH (FUNCTION = 'email()') NOT NULL,
     GovernmentID char(11) MASKED WITH (FUNCTION = 'partial(0,"XXX-XX-",4)') NOT NULL,
     CreditLimit decimal(12,2) MASKED WITH (FUNCTION = 'random(1000,9000)') NOT NULL,
+    PrivateNote nvarchar(120) MASKED WITH (FUNCTION = 'default()') NOT NULL,
     SalesRegion nvarchar(20) NOT NULL,
     EncryptedCardNumber varbinary(256) NULL,
     CONSTRAINT FK_SecureCustomers_Customers FOREIGN KEY (CustomerID) REFERENCES customer.Customers(CustomerID)
 );
 
-INSERT security.SecureCustomers (CustomerID, CustomerName, Email, GovernmentID, CreditLimit, SalesRegion)
+INSERT security.SecureCustomers (CustomerID, CustomerName, Email, GovernmentID, CreditLimit, PrivateNote, SalesRegion)
 SELECT
     c.CustomerID,
     c.CustomerName,
@@ -51,6 +54,7 @@ SELECT
         RIGHT(CONCAT('0', c.CustomerID), 2), '-',
         RIGHT(CONCAT('000', 1000 + c.CustomerID), 4)),
     5000 + (c.CustomerID * 500),
+    CONCAT(N'Customer ', c.CustomerID, N' service follow-up'),
     c.SalesRegion
 FROM customer.Customers AS c;
 GO
@@ -60,7 +64,30 @@ GO
 */
 CREATE USER AdventureGearMaskedReader WITHOUT LOGIN;
 CREATE USER AdventureGearWestReader WITHOUT LOGIN;
-GRANT SELECT ON security.SecureCustomers TO AdventureGearMaskedReader, AdventureGearWestReader;
+CREATE USER AdventureGearPermissionReader WITHOUT LOGIN;
+GRANT SELECT ON OBJECT::security.SecureCustomers TO AdventureGearMaskedReader, AdventureGearWestReader;
+GO
+
+/* Object-level permission verification: this procedure executes as its owner,
+   so the permission reader can use the granted procedure without receiving
+   direct SELECT access to the secured table.
+   * 物件層級權限驗證：程序會以擁有者身分執行，讓讀取者可執行已授權程序但無法直接 SELECT 資料表。
+*/
+CREATE OR ALTER PROCEDURE security.usp_GetSecureCustomer
+    @CustomerID int
+WITH EXECUTE AS OWNER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT CustomerID, CustomerName, SalesRegion
+    FROM security.SecureCustomers
+    WHERE CustomerID = @CustomerID;
+END;
+GO
+
+GRANT EXECUTE ON OBJECT::security.usp_GetSecureCustomer TO AdventureGearPermissionReader;
+DENY SELECT ON OBJECT::security.SecureCustomers TO AdventureGearPermissionReader;
 GO
 
 /* Row-Level Security predicate: the West reader only sees West-region rows.

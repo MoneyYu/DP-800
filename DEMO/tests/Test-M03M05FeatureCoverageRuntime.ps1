@@ -1,0 +1,188 @@
+[CmdletBinding()]
+param(
+    [string]$Server = '127.0.0.1,1433',
+    [string]$User = 'sa'
+)
+
+# Focused, runtime-only contract for the M03 JSON and M05 security demos. The
+# caller supplies DP800_SQL_PASSWORD or SQLCMDPASSWORD in this process; it is
+# never read from Docker, emitted, or put on a command line.
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
+$demoRoot = Join-Path $repoRoot 'DEMO'
+$database = 'AdventureGearAI'
+$tdeDatabase = 'DP800_M05_TdeDemo'
+$failures = [System.Collections.Generic.List[string]]::new()
+
+function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
+function Invoke-Query {
+    param([string]$Database, [string]$Query)
+
+    $result = & $sqlcmd.Source -S $Server -U $User -d $Database -Q $Query -h -1 -W -b -C -I -x 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "sqlcmd query failed against '$Database': $($result -join ' ')" }
+    return @($result | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
+}
+function Invoke-SqlScript {
+    param([string]$Database, [string]$Path)
+
+    $result = & $sqlcmd.Source -S $Server -U $User -d $Database -i $Path -h -1 -W -b -C -r 1 -f 65001 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "sqlcmd script failed for '$Path': $($result -join ' ')" }
+    return ($result | Out-String)
+}
+function Get-Scalar {
+    param([string]$Database, [string]$Query)
+    return (Invoke-Query -Database $Database -Query $Query | Select-Object -First 1)
+}
+
+$sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
+if (-not $sqlcmd) { Write-Host 'SKIP: sqlcmd is not available.' -ForegroundColor Yellow; exit 0 }
+if ([string]::IsNullOrWhiteSpace($env:DP800_SQL_PASSWORD) -and [string]::IsNullOrWhiteSpace($env:SQLCMDPASSWORD)) {
+    Write-Host 'SKIP: set DP800_SQL_PASSWORD or SQLCMDPASSWORD in this process.' -ForegroundColor Yellow
+    exit 0
+}
+$originalSqlcmdPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
+$originalTdeMasterKeyPassword = [Environment]::GetEnvironmentVariable('TdeDemoMasterKeyPassword', 'Process')
+$testPassword = if ($env:DP800_SQL_PASSWORD) { $env:DP800_SQL_PASSWORD } else { $env:SQLCMDPASSWORD }
+[Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $testPassword, 'Process')
+[Environment]::SetEnvironmentVariable('TdeDemoMasterKeyPassword', $testPassword, 'Process')
+
+$bootstrap = Join-Path $demoRoot 'bootstrap\Invoke-Bootstrap.ps1'
+$m03Common = Join-Path $demoRoot 'M03\common\01-advanced-objects.sql'
+$m03Local = Join-Path $demoRoot 'M03\local\01-advanced-queries.sql'
+$m05Common = Join-Path $demoRoot 'M05\common\01-security.sql'
+$m05Local = Join-Path $demoRoot 'M05\local\01-verify-security.sql'
+$m05Tde = Join-Path $demoRoot 'M05\local\02-tde-demo.sql'
+$m05Reset = Join-Path $demoRoot 'M05\reset\reset.sql'
+
+try {
+    # Bootstrap and execute the production scripts, rather than reproducing
+    # their SQL in the test.
+    & pwsh -NoProfile -File $bootstrap -Server $Server -User $User | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Core bootstrap failed during M03/M05 test setup.' }
+    Invoke-SqlScript -Database $database -Path $m03Common | Out-Null
+    $m03Output = Invoke-SqlScript -Database $database -Path $m03Local
+    if ($m03Output -notmatch '(?s)"OrderID"\s*:') {
+        Add-Failure 'M03 FOR JSON PATH customer/order detail output was not returned.'
+    }
+    if ($m03Output -notmatch '(?s)(rocky trails|mixed-surface|aluminum|alloy)') {
+        Add-Failure 'M03 OPENJSON native-column output was not returned.'
+    }
+    if ((Get-Scalar -Database $database -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM catalog.Products
+    WHERE ProductMetadata IS NOT NULL
+      AND JSON_CONTAINS(ProductMetadata, N'trail', N'$.compatibility.terrainTags[*]') = 1
+) THEN N'PASS' ELSE N'FAIL' END;
+"@) -ne 'PASS') {
+        Add-Failure 'M03 JSON_CONTAINS did not match the native ProductMetadata column.'
+    }
+
+    Invoke-SqlScript -Database $database -Path $m05Common | Out-Null
+    $m05Output = Invoke-SqlScript -Database $database -Path $m05Local
+    if ($m05Output -notmatch '(?s)XXXX') {
+        Add-Failure 'M05 verification did not return the fourth default() masked column.'
+    }
+    if ((Get-Scalar -Database $database -Query @"
+SET NOCOUNT ON;
+EXECUTE AS USER = N'AdventureGearMaskedReader';
+DECLARE @result nvarchar(20) =
+(
+    SELECT TOP (1) PrivateNote
+    FROM security.SecureCustomers
+    ORDER BY CustomerID
+);
+REVERT;
+SELECT CASE WHEN @result = N'XXXX' THEN N'PASS' ELSE CONCAT(N'FAIL:', @result) END;
+"@) -ne 'PASS') {
+        Add-Failure 'M05 default() masking did not hide PrivateNote as XXXX.'
+    }
+    $executeResult = Get-Scalar -Database $database -Query @"
+SET NOCOUNT ON;
+EXECUTE AS USER = N'AdventureGearPermissionReader';
+BEGIN TRY
+    EXEC security.usp_GetSecureCustomer @CustomerID = 1;
+    SELECT N'EXECUTE_GRANTED';
+END TRY
+BEGIN CATCH
+    SELECT CONCAT(N'EXECUTE_FAILED:', ERROR_NUMBER());
+END CATCH;
+REVERT;
+"@
+    if ($executeResult -notmatch '^1\s+') {
+        Add-Failure 'M05 object-level GRANT EXECUTE was not effective under EXECUTE AS.'
+    }
+    if ((Get-Scalar -Database $database -Query @"
+SET NOCOUNT ON;
+EXECUTE AS USER = N'AdventureGearPermissionReader';
+BEGIN TRY
+    SELECT TOP (1) CustomerID FROM security.SecureCustomers;
+    SELECT N'DENY_FAILED';
+END TRY
+BEGIN CATCH
+    SELECT N'SELECT_DENIED';
+END CATCH;
+REVERT;
+"@) -ne 'SELECT_DENIED') {
+        Add-Failure 'M05 object-level DENY SELECT was not effective under EXECUTE AS.'
+    }
+
+    if (-not (Test-Path -LiteralPath $m05Tde -PathType Leaf)) {
+        Add-Failure 'M05 manual TDE demo script is missing.'
+    }
+    else {
+        $tdeOutput = Invoke-SqlScript -Database 'master' -Path $m05Tde
+        if ($tdeOutput -notmatch '(?s)DP800_M05_TdeDemo.*(?:ENCRYPTION_IN_PROGRESS|ENCRYPTED)') {
+            Add-Failure 'M05 TDE demo did not return an encryption-state verification row.'
+        }
+        if ((Get-Scalar -Database 'master' -Query "SET NOCOUNT ON; SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NULL THEN N'PASS' ELSE N'FAIL' END;") -ne 'PASS') {
+            Add-Failure "M05 TDE cleanup left $tdeDatabase behind."
+        }
+    }
+
+    Invoke-SqlScript -Database $database -Path $m05Reset | Out-Null
+    if ((Get-Scalar -Database $database -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN OBJECT_ID(N'security.SecureCustomers', N'U') IS NULL
+                  AND OBJECT_ID(N'security.usp_GetSecureCustomer', N'P') IS NULL
+                  AND USER_ID(N'AdventureGearPermissionReader') IS NULL
+                  AND (SELECT COUNT(*) FROM customer.Customers) = 120
+            THEN N'PASS' ELSE N'FAIL' END;
+"@) -ne 'PASS') {
+        Add-Failure 'M05 reset removed an unexpected object or left an M05-owned object behind.'
+    }
+    Invoke-SqlScript -Database $database -Path $m05Common | Out-Null
+}
+catch {
+    Add-Failure $_.Exception.Message
+}
+finally {
+    # The manual script has its own TRY/CATCH cleanup. This assertion and
+    # narrow fallback make a failed test unable to leave the exact demo DB.
+    try {
+        Invoke-Query -Database 'master' -Query @"
+IF DB_ID(N'$tdeDatabase') IS NOT NULL
+BEGIN
+    ALTER DATABASE [$tdeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE [$tdeDatabase];
+END;
+"@ | Out-Null
+    }
+    catch { Add-Failure "TDE test cleanup failed: $($_.Exception.Message)" }
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalSqlcmdPassword, 'Process')
+    [Environment]::SetEnvironmentVariable('TdeDemoMasterKeyPassword', $originalTdeMasterKeyPassword, 'Process')
+    $testPassword = $null
+}
+
+if ($failures.Count -gt 0) {
+    Write-Host "FAIL ($($failures.Count) issue(s))" -ForegroundColor Red
+    foreach ($failure in $failures) { Write-Host "  - $failure" -ForegroundColor Red }
+    exit 1
+}
+
+Write-Host 'PASS (M03 JSON and M05 security runtime coverage succeeded)' -ForegroundColor Green
+exit 0
