@@ -231,9 +231,33 @@ ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_
     Assert-True ($captureMode[0] -eq 'NONE') 'M06 reset must not overwrite a stale manually selected Query Store capture mode.'
     Assert-True ($stateExists[0] -eq '0') 'M06 reset must clear stale recovery metadata after preserving the manual mode.'
 
+    $provision = & pwsh -NoProfile -File $runnerPath -Server $Server -User $User -Modules 6 -Force 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "M06 reprovisioning failed: $provision" }
+
+    Invoke-Query @"
+CREATE TABLE ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID tinyint NOT NULL
+        CONSTRAINT PK_M06QueryStoreRuntimeState PRIMARY KEY
+        CONSTRAINT CK_M06QueryStoreRuntimeState_Singleton CHECK (M06QueryStoreRuntimeStateID = 1),
+    PriorQueryCaptureMode nvarchar(60) NOT NULL,
+    RecordedAtUtc datetime2(0) NOT NULL
+);
+INSERT ops.M06QueryStoreRuntimeState
+    (M06QueryStoreRuntimeStateID, PriorQueryCaptureMode, RecordedAtUtc)
+VALUES (1, N'AUTO', SYSUTCDATETIME());
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
+"@ | Out-Null
+    Invoke-SqlFile -Path $planForcingPath
+    $captureMode = Invoke-Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;'
+    $stateCount = Invoke-Query 'SELECT COUNT(*) FROM ops.M06QueryStoreRuntimeState;'
+    Assert-True ($captureMode[0] -eq 'AUTO') 'Rerunning M06 plan-forcing must migrate and restore a legacy AUTO-to-ALL recovery row.'
+    Assert-True ($stateCount[0] -eq '0') 'Rerunning M06 plan-forcing must clear migrated legacy recovery metadata.'
+
     # Queue reset before the interactive plan-forcing demo behind a synchronized
     # lifecycle-lock holder. Once released, reset must remove the workload first;
     # the demo must then fail only with its intentional workload precondition.
+    Invoke-SqlFile -Path $resetPath
     $provision = & pwsh -NoProfile -File $runnerPath -Server $Server -User $User -Modules 6 -Force 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { throw "M06 reprovisioning failed: $provision" }
 

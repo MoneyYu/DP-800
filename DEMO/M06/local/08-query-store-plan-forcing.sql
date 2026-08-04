@@ -67,6 +67,16 @@ BEGIN TRY
         ALTER TABLE ops.M06QueryStoreRuntimeState
             ADD RecoveryPhase nvarchar(30) NULL;
 
+    /* A legacy singleton row gains these columns in this batch. Mark its
+       original ALL capture mode as active before resolving it. */
+    EXEC sys.sp_executesql
+        N'UPDATE ops.M06QueryStoreRuntimeState
+          SET ExpectedDemoQueryCaptureMode = N''ALL'',
+              RecoveryPhase = N''Active''
+          WHERE M06QueryStoreRuntimeStateID = 1
+            AND ExpectedDemoQueryCaptureMode IS NULL
+            AND RecoveryPhase IS NULL;';
+
     /* Resolve an interrupted demo before replacing its recovery state. The
        dynamic statements support an upgraded legacy table in this batch. */
     EXEC sys.sp_executesql
