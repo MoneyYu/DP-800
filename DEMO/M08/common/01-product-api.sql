@@ -24,34 +24,6 @@ DROP TABLE IF EXISTS dbo.ApiProducts;
 DROP TABLE IF EXISTS dbo.ApiCategories;
 GO
 
-IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NULL
-BEGIN
-    CREATE TABLE api.CdcRuntimeStatus
-    (
-        CdcRuntimeStatusID tinyint NOT NULL
-            CONSTRAINT PK_CdcRuntimeStatus PRIMARY KEY
-            CONSTRAINT CK_CdcRuntimeStatus_Singleton CHECK (CdcRuntimeStatusID = 1),
-        RecordedAtUtc datetime2(0) NOT NULL,
-        EngineEdition int NOT NULL,
-        SqlAgentAvailable bit NOT NULL,
-        DatabaseCdcEnabledByModule bit NOT NULL,
-        ProductCaptureEnabled bit NOT NULL,
-        M08CaptureInstance sysname NULL,
-        M08CaptureTableObjectId int NULL,
-        M08CaptureTableCreatedAt datetime NULL,
-        Behavior nvarchar(1000) NOT NULL
-    );
-END;
-GO
-
-IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NULL
-    ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureInstance sysname NULL;
-IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NULL
-    ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureTableObjectId int NULL;
-IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NULL
-    ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureTableCreatedAt datetime NULL;
-GO
-
 DECLARE @engineEdition int = CONVERT(int, SERVERPROPERTY('EngineEdition'));
 DECLARE @sqlAgentAvailable bit = 0;
 DECLARE @databaseCdcEnabledByModule bit = 0;
@@ -64,52 +36,81 @@ DECLARE @recordedM08CaptureTableObjectId int;
 DECLARE @recordedM08CaptureTableCreatedAt datetime;
 DECLARE @behavior nvarchar(1000);
 DECLARE @appLockResult int;
-
-/* Preserve the ownership marker across idempotent re-runs. Without it, a
-   second run would forget that M08, rather than a pre-existing feature, enabled
-   CDC at database scope. Read it only while holding the ownership lock. */
-
-/* Azure SQL Database manages CDC capture. Local SQL Server needs a running
-   SQL Server Agent for capture/cleanup jobs; record that actual boundary. */
-IF @engineEdition = 5
-    SET @sqlAgentAvailable = 1;
-ELSE
-BEGIN
-    BEGIN TRY
-        IF EXISTS
-        (
-            SELECT 1
-            FROM sys.dm_server_services
-            WHERE servicename LIKE N'SQL Server Agent%'
-              AND status_desc = N'Running'
-        )
-            SET @sqlAgentAvailable = 1;
-    END TRY
-    BEGIN CATCH
-        SET @sqlAgentAvailable = 0;
-    END CATCH;
-END;
-
-EXEC @appLockResult = sys.sp_getapplock
-    @Resource = N'DP800.M08.CdcOwnership',
-    @LockMode = N'Exclusive',
-    @LockOwner = N'Session',
-    @LockTimeout = 60000;
-
-IF @appLockResult < 0
-    THROW 51080, 'M08 could not acquire the CDC ownership lock.', 1;
-
-SELECT @databaseCdcEnabledByModule = DatabaseCdcEnabledByModule
-FROM api.CdcRuntimeStatus
-WHERE CdcRuntimeStatusID = 1;
-SELECT
-    @recordedM08CaptureInstance = M08CaptureInstance,
-    @recordedM08CaptureTableObjectId = M08CaptureTableObjectId,
-    @recordedM08CaptureTableCreatedAt = M08CaptureTableCreatedAt
-FROM api.CdcRuntimeStatus
-WHERE CdcRuntimeStatusID = 1;
+DECLARE @appLockHeld bit = 0;
 
 BEGIN TRY
+    EXEC @appLockResult = sys.sp_getapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Session',
+        @LockTimeout = 60000;
+
+    IF @appLockResult < 0
+        THROW 51080, 'M08 could not acquire the CDC ownership lock.', 1;
+
+    SET @appLockHeld = 1;
+
+    IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NULL
+    BEGIN
+        CREATE TABLE api.CdcRuntimeStatus
+        (
+            CdcRuntimeStatusID tinyint NOT NULL
+                CONSTRAINT PK_CdcRuntimeStatus PRIMARY KEY
+                CONSTRAINT CK_CdcRuntimeStatus_Singleton CHECK (CdcRuntimeStatusID = 1),
+            RecordedAtUtc datetime2(0) NOT NULL,
+            EngineEdition int NOT NULL,
+            SqlAgentAvailable bit NOT NULL,
+            DatabaseCdcEnabledByModule bit NOT NULL,
+            ProductCaptureEnabled bit NOT NULL,
+            M08CaptureInstance sysname NULL,
+            M08CaptureTableObjectId int NULL,
+            M08CaptureTableCreatedAt datetime NULL,
+            Behavior nvarchar(1000) NOT NULL
+        );
+    END;
+
+    IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NULL
+        ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureInstance sysname NULL;
+    IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NULL
+        ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureTableObjectId int NULL;
+    IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NULL
+        ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureTableCreatedAt datetime NULL;
+
+    /* Preserve the ownership marker across idempotent re-runs. Without it, a
+       second run would forget that M08, rather than a pre-existing feature,
+       enabled CDC at database scope. */
+    SELECT @databaseCdcEnabledByModule = DatabaseCdcEnabledByModule
+    FROM api.CdcRuntimeStatus
+    WHERE CdcRuntimeStatusID = 1;
+    SELECT
+        @recordedM08CaptureInstance = M08CaptureInstance,
+        @recordedM08CaptureTableObjectId = M08CaptureTableObjectId,
+        @recordedM08CaptureTableCreatedAt = M08CaptureTableCreatedAt
+    FROM api.CdcRuntimeStatus
+    WHERE CdcRuntimeStatusID = 1;
+
+    /* Azure SQL Database manages CDC capture. Local SQL Server needs a running
+       SQL Server Agent for capture/cleanup jobs; record that actual boundary. */
+    IF @engineEdition = 5
+        SET @sqlAgentAvailable = 1;
+    ELSE
+    BEGIN
+        BEGIN TRY
+            IF EXISTS
+            (
+                SELECT 1
+                FROM sys.dm_server_services
+                WHERE servicename LIKE N'SQL Server Agent%'
+                  AND status_desc = N'Running'
+            )
+                SET @sqlAgentAvailable = 1;
+        END TRY
+        BEGIN CATCH
+            SET @sqlAgentAvailable = 0;
+        END CATCH;
+    END;
+
+    BEGIN TRY
     IF (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()) = 0
     BEGIN
         EXEC sys.sp_cdc_enable_db;
@@ -182,45 +183,66 @@ BEGIN TRY
             WHEN @sqlAgentAvailable = 1 THEN N'CDC capture is enabled and SQL Server Agent is running.'
             ELSE N'CDC metadata is enabled, but local capture/cleanup jobs wait until SQL Server Agent is available.'
         END;
+    END TRY
+    BEGIN CATCH
+        SET @m08CaptureTableObjectId = NULL;
+        SET @m08CaptureTableCreatedAt = NULL;
+        SET @productCaptureEnabled = 0;
+        SET @behavior = CONCAT(N'CDC enablement was skipped: ', ERROR_MESSAGE());
+    END CATCH;
+
+    DELETE FROM api.CdcRuntimeStatus;
+    INSERT api.CdcRuntimeStatus
+    (
+        CdcRuntimeStatusID,
+        RecordedAtUtc,
+        EngineEdition,
+        SqlAgentAvailable,
+        DatabaseCdcEnabledByModule,
+        ProductCaptureEnabled,
+        M08CaptureInstance,
+        M08CaptureTableObjectId,
+        M08CaptureTableCreatedAt,
+        Behavior
+    )
+    VALUES
+    (
+        1,
+        SYSUTCDATETIME(),
+        @engineEdition,
+        @sqlAgentAvailable,
+        @databaseCdcEnabledByModule,
+        @productCaptureEnabled,
+        CASE WHEN @productCaptureEnabled = 1 THEN @m08CaptureInstance END,
+        @m08CaptureTableObjectId,
+        @m08CaptureTableCreatedAt,
+        @behavior
+    );
+
+    SELECT
+        RecordedAtUtc,
+        EngineEdition,
+        SqlAgentAvailable,
+        DatabaseCdcEnabledByModule,
+        ProductCaptureEnabled,
+        M08CaptureInstance,
+        M08CaptureTableObjectId,
+        M08CaptureTableCreatedAt,
+        Behavior
+    FROM api.CdcRuntimeStatus;
 END TRY
 BEGIN CATCH
-    SET @m08CaptureTableObjectId = NULL;
-    SET @m08CaptureTableCreatedAt = NULL;
-    SET @productCaptureEnabled = 0;
-    SET @behavior = CONCAT(N'CDC enablement was skipped: ', ERROR_MESSAGE());
+    IF @appLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
+    THROW;
 END CATCH;
 
-DELETE FROM api.CdcRuntimeStatus;
-INSERT api.CdcRuntimeStatus
-(
-    CdcRuntimeStatusID,
-    RecordedAtUtc,
-    EngineEdition,
-    SqlAgentAvailable,
-    DatabaseCdcEnabledByModule,
-    ProductCaptureEnabled,
-    M08CaptureInstance,
-    M08CaptureTableObjectId,
-    M08CaptureTableCreatedAt,
-    Behavior
-)
-VALUES
-(
-    1,
-    SYSUTCDATETIME(),
-    @engineEdition,
-    @sqlAgentAvailable,
-    @databaseCdcEnabledByModule,
-    @productCaptureEnabled,
-    CASE WHEN @productCaptureEnabled = 1 THEN @m08CaptureInstance END,
-    @m08CaptureTableObjectId,
-    @m08CaptureTableCreatedAt,
-    @behavior
-);
-
-EXEC sys.sp_releaseapplock
-    @Resource = N'DP800.M08.CdcOwnership',
-    @LockOwner = N'Session';
+IF @appLockHeld = 1
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
 GO
 
 CREATE OR ALTER VIEW api.Categories
@@ -301,19 +323,6 @@ BEGIN
     WHERE @CategoryID IS NULL OR CategoryID = @CategoryID
     ORDER BY ProductID;
 END;
-GO
-
-SELECT
-    RecordedAtUtc,
-    EngineEdition,
-    SqlAgentAvailable,
-    DatabaseCdcEnabledByModule,
-    ProductCaptureEnabled,
-    M08CaptureInstance,
-    M08CaptureTableObjectId,
-    M08CaptureTableCreatedAt,
-    Behavior
-FROM api.CdcRuntimeStatus;
 GO
 
 PRINT N'M08 api.* views, CDC status, and safe product procedure are ready.';

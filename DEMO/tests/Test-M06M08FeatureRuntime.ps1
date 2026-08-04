@@ -31,6 +31,14 @@ function Assert-Source {
     param([string]$Text, [string]$Pattern, [string]$Message)
     if ($null -eq $Text -or $Text -notmatch $Pattern) { Add-Failure $Message }
 }
+function Get-SourceIndex {
+    param([string]$Text, [string]$Value, [switch]$Last)
+    if ($null -eq $Text) { return -1 }
+    if ($Last) {
+        return $Text.LastIndexOf($Value, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    return $Text.IndexOf($Value, [System.StringComparison]::OrdinalIgnoreCase)
+}
 function Get-OptionalProperty {
     param($Object, [string]$Name)
     if ($null -eq $Object) { return $null }
@@ -69,6 +77,7 @@ Assert-Source $m08Api '(?i)sp_cdc_enable_table' 'M08 must enable CDC for the pro
 Assert-Source $m08Api '(?i)AdventureGearM08Products' 'M08 must use its dedicated CDC capture instance name.'
 Assert-Source $m08Api '(?i)sp_getapplock' 'M08 setup must exclusively lock CDC ownership changes.'
 Assert-Source $m08Api '(?i)@capture_instance\s*=\s*@m08CaptureInstance' 'M08 setup must pass its exact capture instance to CDC enablement.'
+Assert-Source $m08Api '(?is)BEGIN\s+CATCH.*?@AppLockHeld\s*=\s*1.*?sp_releaseapplock.*?THROW' 'M08 setup must release a held CDC ownership lock on setup errors.'
 Assert-Source $m08Api '(?i)M08CaptureInstance' 'M08 must persist the exact CDC capture instance it creates.'
 Assert-Source $m08Api '(?i)dm_server_services|SQL Server Agent' 'M08 must record SQL Agent availability.'
 Assert-Source $m08Api '(?i)CREATE\s+OR\s+ALTER\s+VIEW\s+api\.Products' 'M08 must create the Product read model.'
@@ -78,7 +87,21 @@ Assert-Source $m08Reset '(?i)sp_cdc_disable_db' 'M08 reset must disable CDC when
 Assert-Source $m08Reset '(?i)AdventureGearM08Products' 'M08 reset must revalidate the dedicated CDC capture instance.'
 Assert-Source $m08Reset '(?i)sp_getapplock' 'M08 reset must exclusively lock CDC ownership changes.'
 Assert-Source $m08Reset '(?i)M08CaptureInstance' 'M08 reset must target only M08''s recorded CDC capture instance.'
+Assert-Source $m08Reset '(?is)BEGIN\s+CATCH.*?@AppLockHeld\s*=\s*1.*?sp_releaseapplock.*?THROW' 'M08 reset must release a held CDC ownership lock on reset errors.'
 Assert-Source $m08Reset '(?i)DROP\s+PROCEDURE.*GetProductsByCategory' 'M08 reset must remove the owned procedure.'
+
+$m08SetupLockAcquire = Get-SourceIndex $m08Api 'EXEC @appLockResult = sys.sp_getapplock'
+$m08SetupStatusDdl = Get-SourceIndex $m08Api "IF OBJECT_ID(N'api.CdcRuntimeStatus'"
+Assert-True ($m08SetupLockAcquire -ge 0 -and $m08SetupStatusDdl -ge 0 -and $m08SetupLockAcquire -lt $m08SetupStatusDdl) 'M08 setup must acquire the CDC ownership lock before CdcRuntimeStatus DDL.'
+$m08SetupFinalStatusRead = Get-SourceIndex $m08Api 'FROM api.CdcRuntimeStatus' -Last
+$m08SetupFinalLockRelease = Get-SourceIndex $m08Api 'EXEC sys.sp_releaseapplock' -Last
+Assert-True ($m08SetupFinalStatusRead -ge 0 -and $m08SetupFinalLockRelease -gt $m08SetupFinalStatusRead) 'M08 setup must release the CDC ownership lock only after its final CdcRuntimeStatus read.'
+
+$m08ResetStatusDrop = Get-SourceIndex $m08Reset 'DROP TABLE IF EXISTS api.CdcRuntimeStatus'
+$m08ResetStateUpdate = Get-SourceIndex $m08Reset 'UPDATE ops.DemoModuleState'
+$m08ResetFinalLockRelease = Get-SourceIndex $m08Reset 'EXEC sys.sp_releaseapplock' -Last
+Assert-True ($m08ResetStatusDrop -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetStatusDrop) 'M08 reset must release the CDC ownership lock only after deleting CdcRuntimeStatus.'
+Assert-True ($m08ResetStateUpdate -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetStateUpdate) 'M08 reset must keep the CDC ownership lock through the M08 module state update.'
 
 $dab = $null
 if ($null -ne $dabConfig) {

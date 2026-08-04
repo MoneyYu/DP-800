@@ -65,6 +65,7 @@ DECLARE @ExpectedM08CaptureInstance sysname = N'AdventureGearM08Products';
 DECLARE @M08CaptureExists bit = 0;
 DECLARE @RemainingCaptureCount int = 0;
 DECLARE @AppLockResult int;
+DECLARE @AppLockHeld bit = 0;
 
 EXEC @AppLockResult = sys.sp_getapplock
     @Resource = N'DP800.M08.CdcOwnership',
@@ -74,6 +75,8 @@ EXEC @AppLockResult = sys.sp_getapplock
 
 IF @AppLockResult < 0
     THROW 51081, 'M08 reset could not acquire the CDC ownership lock.', 1;
+
+SET @AppLockHeld = 1;
 
 BEGIN TRY
     /* The application lock protects this revalidation-and-disable sequence from
@@ -136,17 +139,33 @@ BEGIN TRY
                 EXEC sys.sp_cdc_disable_db;
         END;
     END;
+
+    DROP TABLE IF EXISTS api.CdcRuntimeStatus;
+
+    /* M08 has no downstream module dependents. Keep the module state transition
+       under the ownership lock so a concurrent setup cannot be overwritten. */
+    UPDATE ops.DemoModuleState
+    SET Status = N'NotStarted',
+        StartedAtUtc = NULL,
+        CompletedAtUtc = NULL,
+        LastError = NULL,
+        ErrorNumber = NULL,
+        ErrorLine = NULL,
+        UpdatedAtUtc = SYSUTCDATETIME()
+    WHERE ModuleNumber IN (8);
 END TRY
 BEGIN CATCH
-    EXEC sys.sp_releaseapplock
-        @Resource = N'DP800.M08.CdcOwnership',
-        @LockOwner = N'Session';
+    IF @AppLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
     THROW;
 END CATCH;
 
-EXEC sys.sp_releaseapplock
-    @Resource = N'DP800.M08.CdcOwnership',
-    @LockOwner = N'Session';
+IF @AppLockHeld = 1
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
 GO
 
 DROP PROCEDURE IF EXISTS api.GetProductsByCategory;
@@ -154,23 +173,6 @@ DROP VIEW IF EXISTS api.InventoryAvailability;
 DROP VIEW IF EXISTS api.ProductCatalog;
 DROP VIEW IF EXISTS api.Products;
 DROP VIEW IF EXISTS api.Categories;
-DROP TABLE IF EXISTS api.CdcRuntimeStatus;
-GO
-
-/* ---------------------------------------------------------------------------
-   State reset: only Module 8 (no dependents).
----------------------------------------------------------------------------
-狀態重設：只重設模組 8（沒有相依項）。
-*/
-UPDATE ops.DemoModuleState
-SET Status = N'NotStarted',
-    StartedAtUtc = NULL,
-    CompletedAtUtc = NULL,
-    LastError = NULL,
-    ErrorNumber = NULL,
-    ErrorLine = NULL,
-    UpdatedAtUtc = SYSUTCDATETIME()
-WHERE ModuleNumber IN (8);
 GO
 
 SET NOEXEC OFF;
