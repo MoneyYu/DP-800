@@ -11,8 +11,25 @@ $testsRoot = Join-Path $demoRoot 'tests'
 $failures = [System.Collections.Generic.List[string]]::new()
 function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
 
+function ConvertTo-CanonicalRunnablePowerShellCommand {
+    param([string]$Command)
+
+    $trimmedCommand = $Command.Trim()
+    if ($trimmedCommand -notmatch '^(?i:&\s+)?(?i:pwsh(?:\.exe)?)\s+(?<noProfile>(?i:-NoProfile)\s+)?(?i:-File)(?<fileAndArguments>\s+.+)$') {
+        return $null
+    }
+
+    $noProfile = if ($Matches['noProfile']) { ' -NoProfile' } else { '' }
+    return "pwsh$noProfile -File $($Matches['fileAndArguments'].Trim())"
+}
+
 function Test-ExplicitDatabaseSafety {
     param([string]$Command)
+
+    $canonicalCommand = ConvertTo-CanonicalRunnablePowerShellCommand -Command $Command
+    if ($null -ne $canonicalCommand) {
+        $Command = $canonicalCommand
+    }
 
     $fullDatabaseParameterName = '(?i:Database)'
     $abbreviatedDatabaseParameterName = '(?i:Databas|Databa|Datab|Data|Dat|Da|D)'
@@ -308,8 +325,8 @@ function Get-RunnablePowerShellCommands {
     $commands = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $normalizedText = $Text -replace '[ \t]*`\r?\n[ \t]*', ' '
     foreach ($line in ($normalizedText -split "`r?`n")) {
-        $command = $line.Trim()
-        if ($command -match '(?i)^pwsh -NoProfile -File\s+') {
+        $command = ConvertTo-CanonicalRunnablePowerShellCommand -Command $line
+        if ($null -ne $command) {
             [void]$commands.Add($command)
         }
     }
@@ -332,6 +349,31 @@ if (@(Get-RunnablePowerShellCommands -Text @'
 ```
 '@).Count -ne 0) {
     Add-Failure 'Command extraction fixture incorrectly treats a commented code-block command as runnable.'
+}
+$standardWrapperVariants = @(
+    [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master'; Name = 'pwsh' }
+    [pscustomobject]@{ Command = 'pwsh.exe -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master'; Name = 'pwsh.exe' }
+    [pscustomobject]@{ Command = '& pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master'; Name = 'call operator pwsh' }
+    [pscustomobject]@{ Command = '& pwsh.exe -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master'; Name = 'call operator pwsh.exe' }
+)
+foreach ($fixture in $standardWrapperVariants) {
+    $commands = @(Get-RunnablePowerShellCommands -Text $fixture.Command)
+    if ($commands.Count -ne 1 -or
+        $commands[0] -cne 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master') {
+        Add-Failure "Command extraction fixture does not normalize the $($fixture.Name) wrapper."
+    }
+    if (Test-ExplicitDatabaseSafety -Command $fixture.Command) {
+        Add-Failure "Database safety fixture does not reject a master target through the $($fixture.Name) wrapper."
+    }
+}
+$noProfileWrapperCommand = 'pwsh -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master'
+$noProfileWrapperCommands = @(Get-RunnablePowerShellCommands -Text $noProfileWrapperCommand)
+if ($noProfileWrapperCommands.Count -ne 1 -or
+    $noProfileWrapperCommands[0] -cne $noProfileWrapperCommand) {
+    Add-Failure 'Command extraction fixture does not preserve an explicit profile-loading wrapper.'
+}
+if (Test-ExplicitDatabaseSafety -Command $noProfileWrapperCommand) {
+    Add-Failure 'Database safety fixture does not reject a master target through a profile-loading wrapper.'
 }
 $masterContinuationCommands = @(Get-RunnablePowerShellCommands -Text @'
 pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 `
@@ -382,12 +424,12 @@ function Test-CommandSet {
     }
 
     foreach ($command in $englishCommands) {
-        if ($command -notmatch '(?i)^pwsh -NoProfile -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
+        if ($command -notmatch '(?i)^pwsh(?: -NoProfile)? -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
             Add-Failure "$englishRelativePath has a runnable command without an explicit DEMO script path: $command"
         }
     }
     foreach ($command in $localizedCommands) {
-        if ($command -notmatch '(?i)^pwsh -NoProfile -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
+        if ($command -notmatch '(?i)^pwsh(?: -NoProfile)? -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
             Add-Failure "$localizedRelativePath has a runnable command without an explicit DEMO script path: $command"
         }
         if ($command -match '(?i)DP800_M\d{2}') {
@@ -409,6 +451,25 @@ function Test-CommandSet {
         }
     }
 }
+
+foreach ($fixture in $standardWrapperVariants) {
+    $adventureGearCommand = $fixture.Command -replace '(?i)-D master$', '-Database AdventureGearAI'
+    Test-CommandSet -EnglishPath 'English fixture' -LocalizedPath "$($fixture.Name) fixture" `
+        -EnglishText @'
+pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI
+pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -InputFile DEMO/M01/01-Create-Database.sql
+'@ `
+        -LocalizedText "$adventureGearCommand`npwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -InputFile DEMO/M01/01-Create-Database.sql"
+}
+Test-CommandSet -EnglishPath 'profile-loading English fixture' -LocalizedPath 'profile-loading zh-TW fixture' `
+    -EnglishText @'
+pwsh -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI
+pwsh -File DEMO/scripts/Invoke-Dp800Sql.ps1 -InputFile DEMO/M01/01-Create-Database.sql
+'@ `
+    -LocalizedText @'
+& pwsh.exe -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI
+& pwsh.exe -File DEMO/scripts/Invoke-Dp800Sql.ps1 -InputFile DEMO/M01/01-Create-Database.sql
+'@
 
 function Test-SqlHanUsage {
     param([string]$Path)
@@ -454,7 +515,7 @@ foreach ($englishReadme in $englishReadmes) {
     if ($null -eq $englishText) { continue }
     foreach ($command in (Get-RunnablePowerShellCommands -Text $englishText)) {
         [void]$allEnglishCommands.Add($command)
-        if ($command -notmatch '(?i)^pwsh -NoProfile -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
+        if ($command -notmatch '(?i)^pwsh(?: -NoProfile)? -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
             Add-Failure "$(Resolve-RepoPath $englishReadme.FullName) has a runnable command without an explicit DEMO script path: $command"
         }
     }
