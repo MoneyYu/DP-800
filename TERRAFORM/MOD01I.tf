@@ -36,8 +36,11 @@ resource "azurerm_automation_runbook" "lab01i_sql_maintenance" {
   location                = azurerm_resource_group.dp300.location
   log_progress            = true
   log_verbose             = true
-  runbook_type            = "PowerShell72"
-  description             = "Executes Azure SQL Database maintenance (stats refresh + DBCC)."
+  runbook_type            = "PowerShell"
+  # The scheduled SqlPassword path uses Get-AutomationPSCredential, which Azure
+  # provides only in the system-generated PowerShell 5.1 Runtime Environment.
+  runtime_environment_name = "PowerShell-5.1"
+  description              = "Executes Azure SQL Database maintenance (stats refresh + DBCC)."
 
   content = <<-POWERSHELL
     param (
@@ -119,7 +122,6 @@ resource "azurerm_automation_schedule" "lab01i_daily" {
   frequency               = "Day"
   interval                = 1
   timezone                = "Asia/Taipei"
-  start_time              = timeadd(timestamp(), "15m")
   description             = "Daily Azure SQL maintenance window."
 }
 

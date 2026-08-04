@@ -7,7 +7,6 @@ resource "azurerm_mssql_database" "lab01e" {
   collation    = "SQL_Latin1_General_CP1_CI_AS"
   sku_name     = "HS_Gen5_2"
   license_type = "BasePrice"
-  max_size_gb  = 32
   read_scale   = false
 
   tags = local.default_tags
