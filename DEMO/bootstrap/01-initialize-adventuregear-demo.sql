@@ -1,4 +1,4 @@
-/*
+﻿/*
     01-initialize-adventuregear-demo.sql
 
     Initializes the unified AdventureGearAI demo database:
@@ -13,7 +13,10 @@
     bootstrap can be re-run safely. Module-specific (M01..M11) advanced objects
     are intentionally NOT created here; they are provisioned by later module
     runners against this same AdventureGearAI database.
-*/
+    01-initialize-adventuregear-demo.sql
+    初始化統一 AdventureGearAI 示範資料庫：網域結構描述 catalog、sales、customer、security、ops、api、search、ai；作業追蹤 ops.DemoEnvironment 標記與 ops.DemoModuleState；以及每個模組使用的標準逼真（虛構）電子商務核心：catalog.Categories / catalog.Products / catalog.Inventory、customer.Customers / customer.ProductReviews、sales.Orders / sales.OrderItems。
+    此指令碼具冪等性：每個物件與植入區塊都受防護，因此可安全重新執行 bootstrap。模組專屬（M01..M11）的進階物件刻意不在此處建立；後續模組執行器會針對同一個 AdventureGearAI 資料庫佈建它們。
+    */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 SET ANSI_NULLS ON;
@@ -26,7 +29,9 @@ GO
 /* ---------------------------------------------------------------------------
    Domain schemas (CREATE SCHEMA must be the first statement in its batch, so
    each guarded creation is executed via EXEC for idempotency).
---------------------------------------------------------------------------- */
+---------------------------------------------------------------------------
+網域結構描述（CREATE SCHEMA 必須是其批次的第一個陳述式，因此每個受防護的建立作業都透過 EXEC 執行以維持冪等性）。
+*/
 IF SCHEMA_ID(N'catalog') IS NULL EXEC (N'CREATE SCHEMA catalog;');
 GO
 IF SCHEMA_ID(N'sales') IS NULL EXEC (N'CREATE SCHEMA sales;');
@@ -46,7 +51,9 @@ GO
 
 /* ---------------------------------------------------------------------------
    Operational tracking tables.
---------------------------------------------------------------------------- */
+---------------------------------------------------------------------------
+作業追蹤資料表。
+*/
 IF OBJECT_ID(N'ops.DemoEnvironment', N'U') IS NULL
 BEGIN
     CREATE TABLE ops.DemoEnvironment
@@ -93,7 +100,9 @@ GO
 
 /* ---------------------------------------------------------------------------
    Canonical ecommerce core.
---------------------------------------------------------------------------- */
+---------------------------------------------------------------------------
+標準電子商務核心。
+*/
 IF OBJECT_ID(N'catalog.Categories', N'U') IS NULL
 BEGIN
     CREATE TABLE catalog.Categories
@@ -231,7 +240,9 @@ GO
 
 /* ---------------------------------------------------------------------------
    Operational seed: environment marker and module state rows.
---------------------------------------------------------------------------- */
+---------------------------------------------------------------------------
+作業植入：環境標記和模組狀態資料列。
+*/
 IF NOT EXISTS (SELECT 1 FROM ops.DemoEnvironment)
 BEGIN
     INSERT ops.DemoEnvironment (DemoEnvironmentID, DatabaseName, DemoName, SchemaVersion)
@@ -248,7 +259,9 @@ GO
 /* ---------------------------------------------------------------------------
    Ecommerce core seed (guarded; deterministic identity values so foreign keys
    in later seed blocks and module demos remain stable across re-runs).
---------------------------------------------------------------------------- */
+---------------------------------------------------------------------------
+電子商務核心植入（受防護；使用決定性的身分識別值，因此後續植入區塊和模組示範中的外部索引鍵可在重新執行時保持穩定）。
+*/
 IF NOT EXISTS (SELECT 1 FROM catalog.Categories)
 BEGIN
     SET IDENTITY_INSERT catalog.Categories ON;
@@ -367,7 +380,9 @@ BEGIN
 END;
 GO
 
-/* Refresh the environment marker timestamp so re-runs record the latest init. */
+/* Refresh the environment marker timestamp so re-runs record the latest init.
+   重新整理環境標記時間戳記，使重新執行記錄最新初始化時間。
+   */
 UPDATE ops.DemoEnvironment
 SET UpdatedAtUtc = SYSUTCDATETIME()
 WHERE DemoEnvironmentID = 1;

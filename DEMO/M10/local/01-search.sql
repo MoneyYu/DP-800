@@ -1,4 +1,4 @@
-/*
+﻿/*
     M10 local search — full-text, exact vector, and hybrid RRF for AdventureGearAI.
 
     Runs against search.SearchDocuments (seeded by common/01-search-data.sql).
@@ -7,7 +7,9 @@
     path performs EXACT vector search (VECTOR_DISTANCE over all rows); the DiskANN
     approximate index lives in azure/01-ann-search.sql because preview/GA behavior
     differs from local SQL Server 2025 containers.
-*/
+    M10 本機搜尋：AdventureGearAI 的全文檢索、精確向量搜尋與混合 RRF。
+    對 search.SearchDocuments 執行（由 common/01-search-data.sql 植入）。全文與向量支援會分別偵測，並對已安裝建置不支援的項目輸出實際略過原因。本機路徑執行精確向量搜尋（所有資料列上的 VECTOR_DISTANCE）；DiskANN 近似索引位於 azure/01-ann-search.sql，因為預覽版/GA 行為與本機 SQL Server 2025 容器不同。
+    */
 SET NOCOUNT ON;
 SET QUOTED_IDENTIFIER ON;
 

@@ -1,4 +1,4 @@
-/*
+﻿/*
     M10 common setup — search corpus for AdventureGearAI.
 
     Seeds search.SearchDocuments from the canonical AdventureGearAI content
@@ -7,7 +7,9 @@
     row carries a non-null SearchVector so exact and approximate vector search
     have data to run against. The search schema is created by the core bootstrap;
     this script is idempotent (it recreates the corpus on each run).
-*/
+    M10 共用設定：AdventureGearAI 的搜尋語料庫。
+    從標準 AdventureGearAI 內容（customer.ProductReviews 與 catalog.Products 的聯結）植入 search.SearchDocuments，將基本評論擴增為至少 100 份文件，以符合 DiskANN 的最小向量數量。每個資料列都帶有非 Null 的 SearchVector，讓精確與近似向量搜尋都有可執行的資料。search 結構描述由核心 bootstrap 建立；此指令碼具冪等性（每次執行會重新建立語料庫）。
+    */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 GO
