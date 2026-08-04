@@ -14,8 +14,13 @@ function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
 function Test-ExplicitDatabaseSafety {
     param([string]$Command)
 
+    $fullDatabaseParameterName = '(?i:Database)'
+    $abbreviatedDatabaseParameterName = '(?i:Databas|Databa|Datab|Data|Dat|Da|D)'
     $databaseParameterName = '(?i:Database|Databas|Databa|Datab|Data|Dat|Da|D)'
-    $databaseParameters = [regex]::Matches($Command, "(?<!\S)-$databaseParameterName(?=[:\s]|$)")
+    $databaseParameters = @([regex]::Matches($Command, "(?<!\S)-$fullDatabaseParameterName(?=[:\s]|$)"))
+    if ([regex]::IsMatch($Command, '(?i)(?<!\S)-File\s+DEMO/scripts/Invoke-Dp800Sql\.ps1(?=\s|$)')) {
+        $databaseParameters += [regex]::Matches($Command, "(?<!\S)-$abbreviatedDatabaseParameterName(?=[:\s]|$)")
+    }
     $validDatabaseTarget = "\A-$databaseParameterName(?::(?:AdventureGearAI|'AdventureGearAI'|`"AdventureGearAI`")(?=\s|`$)|\s+(?:AdventureGearAI|'AdventureGearAI'|`"AdventureGearAI`")(?=\s|`$))"
     foreach ($databaseParameter in $databaseParameters) {
         if (-not [regex]::IsMatch($Command.Substring($databaseParameter.Index), $validDatabaseTarget)) {
@@ -115,12 +120,62 @@ function Get-SqlCommentMask {
     return $commentMask
 }
 
+function Get-UnicodeCodePointAt {
+    param(
+        [string]$Text,
+        [int]$Index
+    )
+
+    $codeUnit = [int][char]$Text[$Index]
+    if ([char]::IsHighSurrogate($Text[$Index]) -and
+        $Index + 1 -lt $Text.Length -and
+        [char]::IsLowSurrogate($Text[$Index + 1])) {
+        return 0x10000 + (($codeUnit - 0xD800) * 0x400) + ([int][char]$Text[$Index + 1] - 0xDC00)
+    }
+    return $codeUnit
+}
+
+function Get-UnicodeCodePointLengthAt {
+    param(
+        [string]$Text,
+        [int]$Index
+    )
+
+    if ([char]::IsHighSurrogate($Text[$Index]) -and
+        $Index + 1 -lt $Text.Length -and
+        [char]::IsLowSurrogate($Text[$Index + 1])) {
+        return 2
+    }
+    return 1
+}
+
+function Test-IntendedHanCodePoint {
+    param([int]$CodePoint)
+
+    return ($CodePoint -ge 0x3400 -and $CodePoint -le 0x4DBF) -or
+        ($CodePoint -ge 0x4E00 -and $CodePoint -le 0x9FFF) -or
+        ($CodePoint -ge 0xF900 -and $CodePoint -le 0xFAFF) -or
+        ($CodePoint -ge 0x20000 -and $CodePoint -le 0x2EBEF)
+}
+
+function Test-TextContainsIntendedHan {
+    param([string]$Text)
+
+    for ($index = 0; $index -lt $Text.Length; $index += Get-UnicodeCodePointLengthAt -Text $Text -Index $index) {
+        if (Test-IntendedHanCodePoint -CodePoint (Get-UnicodeCodePointAt -Text $Text -Index $index)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Test-SqlTextAllowsHanOnlyInComments {
     param([string]$Text)
 
     $commentMask = Get-SqlCommentMask -Text $Text
-    for ($index = 0; $index -lt $Text.Length; $index++) {
-        if ($Text[$index] -match '[\p{IsCJKUnifiedIdeographs}]' -and -not $commentMask[$index]) {
+    for ($index = 0; $index -lt $Text.Length; $index += Get-UnicodeCodePointLengthAt -Text $Text -Index $index) {
+        if ((Test-IntendedHanCodePoint -CodePoint (Get-UnicodeCodePointAt -Text $Text -Index $index)) -and
+            -not $commentMask[$index]) {
             return $false
         }
     }
@@ -159,6 +214,7 @@ foreach ($fixture in @(
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database $(Get-Database)'; Expected = $false; Name = 'expression database target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master'; Expected = $false; Name = 'database single-letter abbreviation master target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Dat master'; Expected = $false; Name = 'database partial abbreviation master target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Unrelated.ps1 -D master'; Expected = $true; Name = 'unrelated script single-letter argument is not a database target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database adventuregearai'; Expected = $false; Name = 'lowercase AdventureGearAI target' }
     )) {
     if ((Test-ExplicitDatabaseSafety -Command $fixture.Command) -ne $fixture.Expected) {
@@ -174,6 +230,12 @@ foreach ($fixture in @(
         [pscustomobject]@{ Text = 'SELECT "a""b"; -- 繁中'; Expected = $true; Name = 'escaped double-quoted identifier followed by comment Han text' }
         [pscustomobject]@{ Text = 'SELECT "a""--""b"; 繁中;'; Expected = $false; Name = 'escaped double-quoted identifier does not mask later executable Han text' }
         [pscustomobject]@{ Text = 'SELECT 繁中;'; Expected = $false; Name = 'executable Han text' }
+        [pscustomobject]@{ Text = 'SELECT 㐀;'; Expected = $false; Name = 'executable Extension A Han text' }
+        [pscustomobject]@{ Text = 'SELECT 豈;'; Expected = $false; Name = 'executable CJK compatibility Han text' }
+        [pscustomobject]@{ Text = "SELECT $([char]::ConvertFromUtf32(0x20000));"; Expected = $false; Name = 'executable supplementary Han text' }
+        [pscustomobject]@{ Text = '-- 㐀'; Expected = $true; Name = 'Extension A Han comment text' }
+        [pscustomobject]@{ Text = '-- 豈'; Expected = $true; Name = 'CJK compatibility Han comment text' }
+        [pscustomobject]@{ Text = "-- $([char]::ConvertFromUtf32(0x20000))"; Expected = $true; Name = 'supplementary Han comment text' }
     )) {
     if ((Test-SqlTextAllowsHanOnlyInComments -Text $fixture.Text) -ne $fixture.Expected) {
         Add-Failure "SQL lexical fixture failed for $($fixture.Name)."
@@ -320,7 +382,7 @@ function Test-SqlHanUsage {
 
     $bytes = [System.IO.File]::ReadAllBytes($Path)
     $text = [System.IO.File]::ReadAllText($Path)
-    if ($text -notmatch '[\p{IsCJKUnifiedIdeographs}]') { return }
+    if (-not (Test-TextContainsIntendedHan -Text $text)) { return }
 
     $relativePath = Resolve-RepoPath $Path
     $hasUtf8Bom = $bytes.Length -ge 3 -and
@@ -331,8 +393,9 @@ function Test-SqlHanUsage {
 
     $commentMask = Get-SqlCommentMask -Text $text
 
-    for ($index = 0; $index -lt $text.Length; $index++) {
-        if ($text[$index] -match '[\p{IsCJKUnifiedIdeographs}]' -and -not $commentMask[$index]) {
+    for ($index = 0; $index -lt $text.Length; $index += Get-UnicodeCodePointLengthAt -Text $text -Index $index) {
+        if ((Test-IntendedHanCodePoint -CodePoint (Get-UnicodeCodePointAt -Text $text -Index $index)) -and
+            -not $commentMask[$index]) {
             Add-Failure "$relativePath contains Han characters outside a SQL comment."
             break
         }
