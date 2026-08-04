@@ -11,6 +11,154 @@ $testsRoot = Join-Path $demoRoot 'tests'
 $failures = [System.Collections.Generic.List[string]]::new()
 function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
 
+function Test-ExplicitDatabaseSafety {
+    param([string]$Command)
+
+    $databaseArguments = [regex]::Matches(
+        $Command,
+        '(?i)(?<!\S)-Database(?::\s*|\s+)(?<value>"[^"]*"|''[^'']*''|\S+)')
+    foreach ($databaseArgument in $databaseArguments) {
+        $databaseName = $databaseArgument.Groups['value'].Value.Trim([char[]]@('"', "'"))
+        if (-not $databaseName.Equals('AdventureGearAI', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-SqlCommentMask {
+    param([string]$Text)
+
+    $commentMask = [bool[]]::new($Text.Length)
+    $state = 'Normal'
+    $blockCommentDepth = 0
+    for ($index = 0; $index -lt $Text.Length; $index++) {
+        $character = $Text[$index]
+        $next = if ($index + 1 -lt $Text.Length) { $Text[$index + 1] } else { [char]0 }
+
+        if ($state -eq 'LineComment') {
+            if ($character -eq "`r" -or $character -eq "`n") {
+                $state = 'Normal'
+            }
+            else {
+                $commentMask[$index] = $true
+            }
+            continue
+        }
+        if ($state -eq 'BlockComment') {
+            $commentMask[$index] = $true
+            if ($character -eq '/' -and $next -eq '*') {
+                $commentMask[$index + 1] = $true
+                $index++
+                $blockCommentDepth++
+            }
+            elseif ($character -eq '*' -and $next -eq '/') {
+                $commentMask[$index + 1] = $true
+                $index++
+                $blockCommentDepth--
+                if ($blockCommentDepth -eq 0) {
+                    $state = 'Normal'
+                }
+            }
+            continue
+        }
+        if ($state -eq 'SingleQuote') {
+            if ($character -eq "'" -and $next -eq "'") {
+                $index++
+            }
+            elseif ($character -eq "'") {
+                $state = 'Normal'
+            }
+            continue
+        }
+        if ($state -eq 'BracketIdentifier') {
+            if ($character -eq ']' -and $next -eq ']') {
+                $index++
+            }
+            elseif ($character -eq ']') {
+                $state = 'Normal'
+            }
+            continue
+        }
+
+        if ($character -eq '-' -and $next -eq '-') {
+            $commentMask[$index] = $true
+            $commentMask[$index + 1] = $true
+            $index++
+            $state = 'LineComment'
+        }
+        elseif ($character -eq '/' -and $next -eq '*') {
+            $commentMask[$index] = $true
+            $commentMask[$index + 1] = $true
+            $index++
+            $blockCommentDepth = 1
+            $state = 'BlockComment'
+        }
+        elseif ($character -eq "'") {
+            $state = 'SingleQuote'
+        }
+        elseif ($character -eq '[') {
+            $state = 'BracketIdentifier'
+        }
+    }
+    return $commentMask
+}
+
+function Test-SqlTextAllowsHanOnlyInComments {
+    param([string]$Text)
+
+    $commentMask = Get-SqlCommentMask -Text $Text
+    for ($index = 0; $index -lt $Text.Length; $index++) {
+        if ($Text[$index] -match '[\p{IsCJKUnifiedIdeographs}]' -and -not $commentMask[$index]) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-PathIsDirectoryOrDescendant {
+    param(
+        [string]$Path,
+        [string]$Directory
+    )
+
+    $normalizedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([char[]]@('\', '/'))
+    $normalizedDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd([char[]]@('\', '/'))
+    return $normalizedPath.Equals($normalizedDirectory, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $normalizedPath.StartsWith(
+            $normalizedDirectory + [System.IO.Path]::DirectorySeparatorChar,
+            [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+foreach ($fixture in @(
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI'; Expected = $true; Name = 'space AdventureGearAI target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:AdventureGearAI'; Expected = $true; Name = 'colon AdventureGearAI target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database master'; Expected = $false; Name = 'space master target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:master'; Expected = $false; Name = 'colon master target' }
+    )) {
+    if ((Test-ExplicitDatabaseSafety -Command $fixture.Command) -ne $fixture.Expected) {
+        Add-Failure "Database safety fixture failed for $($fixture.Name)."
+    }
+}
+
+foreach ($fixture in @(
+        [pscustomobject]@{ Text = '/* outer /* nested */ 繁中 */'; Expected = $true; Name = 'nested block comment Han text' }
+        [pscustomobject]@{ Text = 'SELECT N''繁中'';'; Expected = $false; Name = 'string literal Han text' }
+        [pscustomobject]@{ Text = 'SELECT [繁中];'; Expected = $false; Name = 'bracket identifier Han text' }
+        [pscustomobject]@{ Text = 'SELECT 繁中;'; Expected = $false; Name = 'executable Han text' }
+    )) {
+    if ((Test-SqlTextAllowsHanOnlyInComments -Text $fixture.Text) -ne $fixture.Expected) {
+        Add-Failure "SQL lexical fixture failed for $($fixture.Name)."
+    }
+}
+
+if (Test-PathIsDirectoryOrDescendant -Path (Join-Path $demoRoot 'testsArchive\README.md') -Directory $testsRoot) {
+    Add-Failure 'README discovery fixture incorrectly excludes DEMO\testsArchive.'
+}
+if (-not (Test-PathIsDirectoryOrDescendant -Path (Join-Path $testsRoot 'fixtures\README.md') -Directory $testsRoot)) {
+    Add-Failure 'README discovery fixture does not exclude a true DEMO\tests descendant.'
+}
+
 function Resolve-RepoPath {
     param([string]$Path)
     $full = [System.IO.Path]::GetFullPath($Path)
@@ -42,6 +190,10 @@ function Get-RunnablePowerShellCommands {
         }
     }
     return $commands
+}
+
+if (@(Get-RunnablePowerShellCommands -Text '# pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:master').Count -ne 0) {
+    Add-Failure 'Command extraction fixture incorrectly treats a comment as runnable.'
 }
 
 function Test-ByteArraysEqual {
@@ -83,8 +235,7 @@ function Test-CommandSet {
         if ($command -match '(?i)DP800_M\d{2}') {
             Add-Failure "$localizedRelativePath has a runnable command targeting a legacy DP800_Mxx database: $command"
         }
-        if ($command -match '(?i)-Database(?:\s+|$)' -and
-            $command -notmatch '(?i)-Database\s+AdventureGearAI(?:\s|$)') {
+        if (-not (Test-ExplicitDatabaseSafety -Command $command)) {
             Add-Failure "$localizedRelativePath has a non-AdventureGearAI database target: $command"
         }
     }
@@ -115,73 +266,7 @@ function Test-SqlHanUsage {
         Add-Failure "$relativePath contains Han characters but is not encoded as UTF-8 with a BOM."
     }
 
-    # Mark SQL comments lexically. Quotes and bracket identifiers are handled
-    # before comment delimiters so text such as N'-- 繁中' and [/* 繁中 */] is
-    # correctly treated as executable text rather than a comment.
-    $commentMask = [bool[]]::new($text.Length)
-    $state = 'Normal'
-    for ($index = 0; $index -lt $text.Length; $index++) {
-        $character = $text[$index]
-        $next = if ($index + 1 -lt $text.Length) { $text[$index + 1] } else { [char]0 }
-
-        switch ($state) {
-            'LineComment' {
-                if ($character -eq "`r" -or $character -eq "`n") {
-                    $state = 'Normal'
-                }
-                else {
-                    $commentMask[$index] = $true
-                }
-                continue
-            }
-            'BlockComment' {
-                $commentMask[$index] = $true
-                if ($character -eq '*' -and $next -eq '/') {
-                    $commentMask[$index + 1] = $true
-                    $index++
-                    $state = 'Normal'
-                }
-                continue
-            }
-            'SingleQuote' {
-                if ($character -eq "'" -and $next -eq "'") {
-                    $index++
-                }
-                elseif ($character -eq "'") {
-                    $state = 'Normal'
-                }
-                continue
-            }
-            'BracketIdentifier' {
-                if ($character -eq ']' -and $next -eq ']') {
-                    $index++
-                }
-                elseif ($character -eq ']') {
-                    $state = 'Normal'
-                }
-                continue
-            }
-        }
-
-        if ($character -eq '-' -and $next -eq '-') {
-            $commentMask[$index] = $true
-            $commentMask[$index + 1] = $true
-            $index++
-            $state = 'LineComment'
-        }
-        elseif ($character -eq '/' -and $next -eq '*') {
-            $commentMask[$index] = $true
-            $commentMask[$index + 1] = $true
-            $index++
-            $state = 'BlockComment'
-        }
-        elseif ($character -eq "'") {
-            $state = 'SingleQuote'
-        }
-        elseif ($character -eq '[') {
-            $state = 'BracketIdentifier'
-        }
-    }
+    $commentMask = Get-SqlCommentMask -Text $text
 
     for ($index = 0; $index -lt $text.Length; $index++) {
         if ($text[$index] -match '[\p{IsCJKUnifiedIdeographs}]' -and -not $commentMask[$index]) {
@@ -197,11 +282,11 @@ Write-Host ''
 
 $englishReadmes = @(
     Get-ChildItem -LiteralPath $demoRoot -Recurse -File -Filter 'README.md' |
-        Where-Object { -not $_.FullName.StartsWith($testsRoot, [System.StringComparison]::OrdinalIgnoreCase) }
+        Where-Object { -not (Test-PathIsDirectoryOrDescendant -Path $_.FullName -Directory $testsRoot) }
 )
 $localizedReadmes = @(
     Get-ChildItem -LiteralPath $demoRoot -Recurse -File -Filter 'README.zh-TW.md' |
-        Where-Object { -not $_.FullName.StartsWith($testsRoot, [System.StringComparison]::OrdinalIgnoreCase) }
+        Where-Object { -not (Test-PathIsDirectoryOrDescendant -Path $_.FullName -Directory $testsRoot) }
 )
 
 $allEnglishCommands = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
