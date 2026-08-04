@@ -93,6 +93,7 @@ Assert-Source $m08Reset '(?i)sp_getapplock' 'M08 reset must exclusively lock CDC
 Assert-Source $m08Reset '(?i)M08CaptureInstance' 'M08 reset must target only M08''s recorded CDC capture instance.'
 Assert-Source $m08Reset '(?is)BEGIN\s+CATCH.*?@AppLockHeld\s*=\s*1.*?sp_releaseapplock.*?THROW' 'M08 reset must release a held CDC ownership lock on reset errors.'
 Assert-Source $m08Reset '(?i)DROP\s+PROCEDURE.*GetProductsByCategory' 'M08 reset must remove the owned procedure.'
+Assert-Source $m08Reset '(?is)IF\s+@M08CaptureInstance\s*=\s*@ExpectedM08CaptureInstance.*?sp_cdc_disable_table.*?END;(?:\s|/\*.*?\*/)*IF\s+@DisableCdcDatabase\s*=\s*1\s+AND\s+EXISTS.*?SELECT\s+@RemainingCount\s*=\s*COUNT\(\*\)\s+FROM\s+cdc\.change_tables.*?sp_cdc_disable_db' 'M08 reset must count remaining captures outside the exact M08 capture-marker branch before disabling module-owned database CDC.'
 
 $m08SetupLockAcquire = Get-SourceIndex $m08Api 'EXEC @appLockResult = sys.sp_getapplock'
 $m08SetupStatusDdl = Get-SourceIndex $m08Api "IF OBJECT_ID(N'api.CdcRuntimeStatus'"
@@ -486,14 +487,39 @@ EXEC sys.sp_cdc_disable_table
     @source_schema = N'catalog',
     @source_name = N'Products',
     @capture_instance = N'$m08CaptureInstance';
+UPDATE api.CdcRuntimeStatus
+SET ProductCaptureEnabled = 0,
+    M08CaptureInstance = NULL,
+    M08CaptureTableObjectId = NULL,
+    M08CaptureTableCreatedAt = NULL,
+    Behavior = N'CDC enablement was skipped: deterministic failed table-capture fixture.'
+WHERE CdcRuntimeStatusID = 1;
 "@ | Out-Null
-        Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
-        $missingOwnedCaptureDisablesDatabaseCdc = @(Invoke-Query -Database AdventureGearAI -Query @"
-SELECT CASE WHEN is_cdc_enabled = 0 THEN N'PASS' ELSE N'FAIL' END
-FROM sys.databases
-WHERE database_id = DB_ID();
+        $failedCapturePrecondition = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE
+    WHEN (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()) = 1
+     AND NOT EXISTS (SELECT 1 FROM cdc.change_tables)
+     AND EXISTS
+     (
+         SELECT 1
+         FROM api.CdcRuntimeStatus
+         WHERE CdcRuntimeStatusID = 1
+           AND DatabaseCdcEnabledByModule = 1
+           AND M08CaptureInstance IS NULL
+     ) THEN N'PASS'
+    ELSE N'FAIL'
+END;
 "@)
-        Assert-True ($missingOwnedCaptureDisablesDatabaseCdc -contains 'PASS') 'M08 reset must disable module-owned database CDC when its externally removed capture was the final capture.'
+        Assert-True ($failedCapturePrecondition -contains 'PASS') 'M08 failed table-capture fixture must retain only the module-owned database CDC marker.'
+        Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
+        $failedCaptureReset = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE
+    WHEN (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()) = 0
+     AND OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NULL THEN N'PASS'
+    ELSE N'FAIL'
+END;
+"@)
+        Assert-True ($failedCaptureReset -contains 'PASS') 'M08 reset must disable failed-setup module-owned database CDC and remove its marker when no capture exists.'
 
         Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\common\01-product-api.sql' | Out-Null
         Invoke-Query -Database AdventureGearAI -Query @"
@@ -510,6 +536,13 @@ EXEC sys.sp_cdc_disable_table
     @source_schema = N'catalog',
     @source_name = N'Products',
     @capture_instance = N'$m08CaptureInstance';
+UPDATE api.CdcRuntimeStatus
+SET ProductCaptureEnabled = 0,
+    M08CaptureInstance = NULL,
+    M08CaptureTableObjectId = NULL,
+    M08CaptureTableCreatedAt = NULL,
+    Behavior = N'CDC enablement was skipped: deterministic failed table-capture fixture with foreign capture.'
+WHERE CdcRuntimeStatusID = 1;
 "@ | Out-Null
         Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
         $foreignCapturePreservesDatabaseCdc = @(Invoke-Query -Database AdventureGearAI -Query @"
@@ -521,11 +554,12 @@ SELECT CASE
          FROM cdc.change_tables
          WHERE source_object_id = OBJECT_ID(N'catalog.Products')
            AND capture_instance = N'$missingOwnedCaptureForeignInstance'
-     ) THEN N'PASS'
+     )
+     AND OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NULL THEN N'PASS'
     ELSE N'FAIL'
 END;
 "@)
-        Assert-True ($foreignCapturePreservesDatabaseCdc -contains 'PASS') 'M08 reset must preserve database CDC and a foreign capture when its owned capture was externally removed.'
+        Assert-True ($foreignCapturePreservesDatabaseCdc -contains 'PASS') 'M08 reset must remove a failed-setup marker while preserving database CDC and a foreign capture.'
     }
 
     $planForcingResults = @(Invoke-Query -Database $probeDatabase -Query @"

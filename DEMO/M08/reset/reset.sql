@@ -92,11 +92,16 @@ BEGIN TRY
        concurrent M08 setup/reset runs. Do not infer ownership from the source
        table: only the recorded dedicated capture identity is removable. */
     IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'DatabaseCdcEnabledByModule') IS NOT NULL
+        SELECT @DisableCdcDatabase = DatabaseCdcEnabledByModule
+        FROM api.CdcRuntimeStatus
+        WHERE CdcRuntimeStatusID = 1;
+
+    IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
        AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NOT NULL
        AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NOT NULL
        AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NOT NULL
         SELECT
-            @DisableCdcDatabase = DatabaseCdcEnabledByModule,
             @M08CaptureInstance = M08CaptureInstance,
             @M08CaptureTableObjectId = M08CaptureTableObjectId,
             @M08CaptureTableCreatedAt = M08CaptureTableCreatedAt
@@ -138,11 +143,15 @@ BEGIN TRY
                 @source_name = N'Products',
                 @capture_instance = @ExpectedM08CaptureInstance;
         END;
+    END;
 
-        /* Count every surviving capture while holding the ownership lock. This
-           also covers an owned capture that was removed outside this module:
-           database CDC can be disabled only when M08 enabled it and no capture
-           remains. Foreign captures are never disabled by this reset. */
+    /* Count every surviving capture while holding the ownership lock whenever
+       M08 enabled database CDC. This includes a setup failure that recorded no
+       exact M08 capture marker. Database CDC can be disabled only when no
+       capture remains, so foreign captures are never disabled by this reset. */
+    IF @DisableCdcDatabase = 1
+       AND EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+    BEGIN
         EXEC sys.sp_executesql
             N'SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
             N'@RemainingCount int OUTPUT',
