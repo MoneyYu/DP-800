@@ -78,6 +78,18 @@ BEGIN TRY
 
     SET @M06AppLockHeld = 1;
 
+    /* The module runner records Running before it dispatches all M06 setup
+       scripts. Reject reset under the shared lifecycle lock so it cannot drop
+       the workload between runner scripts. */
+    IF EXISTS
+    (
+        SELECT 1
+        FROM ops.DemoModuleState
+        WHERE ModuleNumber = 6
+          AND Status = N'Running'
+    )
+        THROW 51008, N'M06 reset refused while Module 6 is Running; wait for setup to finish before resetting.', 1;
+
     /* Hold the same lifecycle lock as the interactive demo from legacy-column
        migration through cleanup, so concurrent reset/demo sessions cannot race
        on the recovery table or overwrite a manually changed capture mode. */
