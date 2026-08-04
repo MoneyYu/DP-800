@@ -19,8 +19,9 @@ The implemented Azure scope follows the DP-800 decks and speaker notes under [PP
 | Default location | `japaneast` |
 | AI override | `ai_location`; affects Azure OpenAI/model placement only |
 | Database Watcher | Preview resource fixed to `Japan West` with `Microsoft.DatabaseWatcher/watchers@2024-10-01-preview` (Japan East is not a supported region; verify the API version with `az provider show --namespace Microsoft.DatabaseWatcher`) |
+| Soft delete / recovery | See [TERRAFORM/README.md](../TERRAFORM/README.md#soft-delete-purge-and-recovery-behavior) for the exact purge/recovery policy; blob/share retention is explicitly disabled, Cognitive Services and Key Vault are purged on destroy, and other backup/recovery behaviors are platform-managed. |
 
-The common `DP800-<group_postfix>` resource group is always declared. The AI resources use a separate `DP800-<group_postfix>-AI` resource group; its SQL server/database remain in `location`, while Azure OpenAI uses `ai_location` when supplied.
+The common `DP800-<group_postfix>` resource group is always declared. For the current environment, the migration warning is `DP800-0804-AI` -> `DP800-0804` (generically `DP800-<group_postfix>-AI` -> `DP800-<group_postfix>`). Terraform targets the common RG, while the currently deployed AI resources remain in the separate AI RG until a deliberate non-destructive migration. For the post-import/reconciliation review plan, keep `enable_data_plane=false`, set `confirm_ai_resource_group_consolidation=true` only to generate the AI-enabled review plan, review it without applying, and re-enable the data plane only later by choice. See [TERRAFORM/README.md](../TERRAFORM/README.md) for the deliberate reconciliation procedure.
 
 ## Retained database gallery
 

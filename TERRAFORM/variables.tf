@@ -30,6 +30,12 @@ variable "confirm_new_dp800_state" {
   }
 }
 
+variable "confirm_ai_resource_group_consolidation" {
+  type        = bool
+  default     = false
+  description = "Explicit acknowledgement required before any AI-enabled plan/apply because consolidating an existing separate AI resource group can replace resources; this is an acknowledgement, not a feature toggle."
+}
+
 variable "location" {
   type        = string
   default     = "japaneast"
@@ -138,7 +144,7 @@ variable "allowed_client_ip" {
 variable "enable_core_sql_ai" {
   type        = bool
   default     = true
-  description = "Enable the DP-800 Azure SQL AI/RAG resource group during later resource modernization."
+  description = "Enable the DP-800 Azure SQL AI/RAG stack during later resource modernization."
 }
 
 variable "enable_azure_sql_gallery" {

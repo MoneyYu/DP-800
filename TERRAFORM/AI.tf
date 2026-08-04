@@ -1,6 +1,5 @@
 locals {
   ai_location            = lower(local.effective_ai_location)
-  ai_resource_group_name = "${local.group_name}-AI"
   ai_sql_server_name     = substr("${local.compact_name_prefix}aisql", 0, 63)
   ai_openai_account_name = substr("${local.resource_name_prefix}-ai-openai", 0, 64)
   ai_sample_sql_path     = abspath("${path.module}/sample-data/ecommerce-ai.sql")
@@ -15,20 +14,12 @@ locals {
   )
 }
 
-resource "azurerm_resource_group" "core_sql_ai" {
-  count = var.enable_core_sql_ai ? 1 : 0
-
-  name     = local.ai_resource_group_name
-  location = local.location
-  tags     = local.default_tags
-}
-
 resource "azurerm_mssql_server" "core_sql_ai" {
   count = var.enable_core_sql_ai ? 1 : 0
 
   name                          = local.ai_sql_server_name
-  resource_group_name           = azurerm_resource_group.core_sql_ai[0].name
-  location                      = azurerm_resource_group.core_sql_ai[0].location
+  resource_group_name           = azurerm_resource_group.dp300.name
+  location                      = azurerm_resource_group.dp300.location
   version                       = "12.0"
   minimum_tls_version           = "1.2"
   public_network_access_enabled = true
@@ -42,6 +33,13 @@ resource "azurerm_mssql_server" "core_sql_ai" {
 
   identity {
     type = "SystemAssigned"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.confirm_ai_resource_group_consolidation
+      error_message = "Set confirm_ai_resource_group_consolidation=true only after reviewing destructive reconciliation or following the documented state-migration procedure for an existing separate AI resource group."
+    }
   }
 
   tags = local.default_tags
@@ -79,7 +77,7 @@ resource "azurerm_cognitive_account" "core_sql_ai" {
   count = var.enable_core_sql_ai ? 1 : 0
 
   name                          = local.ai_openai_account_name
-  resource_group_name           = azurerm_resource_group.core_sql_ai[0].name
+  resource_group_name           = azurerm_resource_group.dp300.name
   location                      = local.ai_location
   kind                          = "OpenAI"
   sku_name                      = "S0"
@@ -95,6 +93,11 @@ resource "azurerm_cognitive_account" "core_sql_ai" {
     precondition {
       condition     = local.ai_location != "japaneast" || local.ai_validated_japan_east_models
       error_message = "Japan East was validated on 2026-08-03 only for text-embedding-3-small version 1 and gpt-5.4-mini version 2026-03-17 with the declared SKUs. Set ai_location to a region verified for any different model tuple."
+    }
+
+    precondition {
+      condition     = var.confirm_ai_resource_group_consolidation
+      error_message = "Set confirm_ai_resource_group_consolidation=true only after reviewing destructive reconciliation or following the documented state-migration procedure for an existing separate AI resource group."
     }
   }
 

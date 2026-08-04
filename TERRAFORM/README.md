@@ -9,7 +9,7 @@ For the architecture and delivery status, see [docs/demo-environment.md](../docs
 - Terraform `>= 1.9.0`.
 - AzureRM provider `>= 5.0.1, < 6.0.0`; AzAPI `~> 2.11`, Random `~> 3.9`, and HTTP `~> 3.6`.
 - Default Azure region: `japaneast`.
-- `ai_location` is a narrow override for the Azure OpenAI account and deployments. The AI resource group and Azure SQL server/database remain in `location`.
+- `ai_location` is a narrow override for Azure OpenAI/model deployment placement only. The common `DP800-<postfix>` resource group and Azure SQL server/database remain in `location`.
 - Every main feature toggle defaults to `true`. This is the full and potentially expensive trainer gallery, not a low-cost default.
 
 ## Prerequisites
@@ -40,6 +40,8 @@ $env:TF_VAR_confirm_new_dp800_state = 'true'
 
 Terraform refuses to plan without this confirmation. Do not set it merely to bypass the guard; reusing DP-300 state can replace its resource group and cascade replacement of databases, VMs, and related resources.
 
+AI-enabled plans/applies also require a separate explicit acknowledgement because Terraform cannot distinguish a safe new AI deployment from destructive reconciliation of an existing separate AI resource group. `confirm_ai_resource_group_consolidation` deliberately defaults to `false`, is **not** a feature toggle, and blocks direct AI plan/apply until you have reviewed destructive reconciliation or the documented state-migration procedure.
+
 ### AI data plane
 
 When both `enable_core_sql_ai` and `enable_data_plane` are `true`, the machine running `terraform apply` also needs:
@@ -58,6 +60,7 @@ It obtains an Azure SQL bearer token from Azure CLI, decodes its `oid` claim, an
 | Variable | Default | Implemented effect and dependency |
 |---|---:|---|
 | `confirm_new_dp800_state` | Required | Must be `true` after selecting a new DP-800 state/workspace; blocks accidental reuse of DP-300 state. |
+| `confirm_ai_resource_group_consolidation` | `false` | Explicit acknowledgement, not a feature toggle. Required for any AI-enabled plan/apply because reconciling a previously separate AI resource group can replace resources. |
 | `location` | `japaneast` | Default region for the main resource group, gallery, AI SQL, and most operations resources. |
 | `ai_location` | `null` | Uses `location` when null; overrides only Azure OpenAI/model placement. |
 | `enable_core_sql_ai` | `true` | Independent Entra-only Azure SQL and Azure OpenAI stack. |
@@ -75,9 +78,9 @@ It obtains an Azure SQL bearer token from Azure CLI, decodes its `oid` claim, an
 
 Meaningful combinations:
 
-- **Full gallery:** defaults; requires `admin_password` and creates the expensive resources listed below.
-- **AI only:** enable `enable_core_sql_ai` and disable gallery, MI, both VMs, PostgreSQL, and operations. Password-free.
-- **AI infrastructure only:** AI-only settings plus `enable_data_plane=false`.
+- **Full gallery:** defaults; requires `admin_password`, creates the expensive resources listed below, and also requires `confirm_ai_resource_group_consolidation=true` because AI remains enabled.
+- **AI only:** enable `enable_core_sql_ai` and disable gallery, MI, both VMs, PostgreSQL, and operations. Password-free, but still blocked until you deliberately set `confirm_ai_resource_group_consolidation=true`.
+- **AI infrastructure only:** AI-only settings plus `enable_data_plane=false`. Still requires the same acknowledgement because the AI SQL server and Cognitive account are still in scope.
 - **Operations only:** disable password-based features. Database Watcher, Key Vault, and the Automation account remain, but the SQL maintenance chain is omitted. Password-free.
 - **All main features disabled:** disable all eight `enable_*` main toggles. Password-free; the common `DP800-<postfix>` resource group, provider data sources, and random suffix resource still remain in the plan.
 
@@ -91,8 +94,8 @@ $credential = [pscredential]::new('terraform', $securePassword)
 $env:TF_VAR_admin_password = $credential.GetNetworkCredential().Password
 
 try {
-    terraform plan -var="group_postfix=0803"
-    terraform apply -var="group_postfix=0803"
+    terraform plan -var="group_postfix=0803" -var="confirm_ai_resource_group_consolidation=true"
+    terraform apply -var="group_postfix=0803" -var="confirm_ai_resource_group_consolidation=true"
 }
 finally {
     Remove-Item Env:TF_VAR_admin_password -ErrorAction SilentlyContinue
@@ -116,10 +119,10 @@ terraform fmt -check -recursive
 terraform validate
 pwsh -NoProfile -File .\scripts\Test-AIStack.ps1
 
-terraform plan -var="group_postfix=0803"
-terraform apply -var="group_postfix=0803"
+terraform plan -var="group_postfix=0803" -var="confirm_ai_resource_group_consolidation=true"
+terraform apply -var="group_postfix=0803" -var="confirm_ai_resource_group_consolidation=true"
 terraform output
-terraform destroy -var="group_postfix=0803"
+terraform destroy -var="group_postfix=0803" -var="confirm_ai_resource_group_consolidation=true"
 ```
 
 Use a delivery-specific postfix. Confirm the active subscription, regions, resource names, costs, model availability, and quota in every plan before applying.
@@ -131,6 +134,7 @@ Prefer feature toggles over Terraform `-target`; toggle-based plans include the 
 ```powershell
 terraform plan `
   -var="group_postfix=0803" `
+  -var="confirm_ai_resource_group_consolidation=true" `
   -var="enable_azure_sql_gallery=false" `
   -var="enable_sql_managed_instance=false" `
   -var="enable_sql_vm_2019=false" `
@@ -174,10 +178,19 @@ Apply automatically runs [scripts/Deploy-AiDataPlane.ps1](scripts/Deploy-AiDataP
 ```powershell
 terraform apply `
   -replace='terraform_data.core_sql_ai_data_plane[0]' `
-  -var="group_postfix=0803"
+  -var="group_postfix=0803" `
+  -var="confirm_ai_resource_group_consolidation=true"
 ```
 
+Applying this configuration directly to the currently deployed two-RG environment attempts destructive replacement of the AI SQL logical server/database and Cognitive account/deployments/identities/RBAC; the data-plane provisioner reruns and model capacity must be reobtained. `confirm_ai_resource_group_consolidation=false` deliberately blocks that direct AI plan/apply path until an informed acknowledgement is supplied. For the current environment, the non-destructive path is `DP800-0804-AI` -> `DP800-0804` (generically `DP800-<group_postfix>-AI` -> `DP800-<group_postfix>`). Before any reconciliation, set `enable_data_plane=false` so `terraform_data.core_sql_ai_data_plane` cannot run SQL while resource IDs change. ARM-move only the supported top-level AI SQL logical server, which moves its database with it, and the Cognitive Services account, which moves its deployments with it, into the common RG; do not move child resources independently. Before the ARM move, delete the two Azure OpenAI resource-scoped role assignments at the old Cognitive account scope (the SQL server managed identity assignment and the deployer assignment), because resource-scoped role assignments do not move and would otherwise become orphaned. Remove those two assignment entries from Terraform state as well, so Terraform can recreate them at the moved account scope during reconciliation. During this window the data plane stays disabled, so temporarily removing OpenAI access is safe. After the move, resource IDs change, so reconcile Terraform state before any normal plan/apply: remove/import the moved Terraform-managed resources at their new IDs. After the old AI RG is empty, reconcile or remove its remaining state references. For the post-import/reconciliation review plan, keep `enable_data_plane=false`, set `confirm_ai_resource_group_consolidation=true` only to generate the AI-enabled review plan, review that plan without applying it, and later re-enable the data plane only deliberately. A plain plan/apply after the ARM move but before state reconciliation is unsafe and can fail because the same-named resources already exist. The exact resource IDs and scopes depend on the live environment, so this document intentionally omits fixed commands.
+
 Before every delivery, recheck the exact model versions, deployment type, Japan East (or `ai_location`) availability, and subscription quota against the current [Foundry model catalog and region tables](https://learn.microsoft.com/azure/ai-foundry/openai/concepts/models). A successful historical plan does not reserve capacity.
+
+## Soft delete, purge, and recovery behavior
+
+- **Configurable and explicitly disabled here:** storage blob/container and Azure Files share retention are disabled with empty `blob_properties {}` and `share_properties {}` blocks. Terraform will detect drift if Azure re-enables them.
+- **Azure-enforced and purged on destroy:** Azure Cognitive Services soft delete is enforced for 48 hours. `cognitive_account.purge_soft_delete_on_destroy=true` purges the soft-deleted account on destroy so same-name recreation works. Purge requires `Microsoft.CognitiveServices/locations/resourceGroups/deletedAccounts/delete`, so the deploying identity needs subscription-scope Contributor or Owner. If delete succeeds but purge fails, Terraform may drop the resource from state on refresh and will not retry; manual purge with the old resource-group name is required. Key Vault is handled the same way: `key_vault.purge_soft_delete_on_destroy=true` and `recover_soft_deleted_key_vaults=true`, while `MOD01G.tf` keeps `purge_protection_enabled=false` with 7-day `soft_delete_retention_days`.
+- **Recovery/backup behavior not controlled by this configuration:** Azure Automation account recovery, PostgreSQL Flexible Server backup retention, storage account recovery, Azure SQL backup retention, and Azure SQL logical-server soft delete preview status are platform behaviors rather than Terraform-managed soft-delete settings.
 
 ## Cost and timing warning
 

@@ -83,6 +83,10 @@ resource "azurerm_storage_account" "lab01" {
   allow_nested_items_to_be_public = false
   shared_access_key_enabled       = var.enable_legacy_key_auth_demo
 
+  # Explicitly keep blob/container and Azure Files share soft delete disabled so Terraform detects drift.
+  blob_properties {}
+  share_properties {}
+
   identity {
     type = "SystemAssigned"
   }

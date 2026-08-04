@@ -1,5 +1,23 @@
 provider "azurerm" {
-  features {}
+  # Azure-enforced Cognitive Services and Key Vault soft delete is handled via purge-on-destroy.
+  features {
+    cognitive_account {
+      purge_soft_delete_on_destroy = true
+    }
+
+    key_vault {
+      purge_soft_delete_on_destroy    = true
+      recover_soft_deleted_key_vaults = true
+    }
+
+    log_analytics_workspace {
+      permanently_delete_on_destroy = true
+    }
+
+    resource_group {
+      prevent_deletion_if_contains_resources = true
+    }
+  }
 
   subscription_id = var.subscription_id
 
