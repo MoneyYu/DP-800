@@ -52,14 +52,50 @@ END;
 GO
 
 /* ---------------------------------------------------------------------------
-   Teardown module-owned views only. The canonical catalog core is never dropped.
+   Teardown CDC objects owned by M08, then module-owned API views, procedure,
+   and CDC status. The canonical catalog core is never dropped.
 ---------------------------------------------------------------------------
 只拆除模組專屬檢視表。標準 catalog 核心絕不會被卸除。
 */
+DECLARE @DisableCdcDatabase bit = 0;
+IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
+    SELECT @DisableCdcDatabase = DatabaseCdcEnabledByModule
+    FROM api.CdcRuntimeStatus
+    WHERE CdcRuntimeStatusID = 1;
+
+IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+BEGIN
+    DECLARE @CaptureInstance sysname;
+    DECLARE M08CdcCursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT capture_instance
+    FROM cdc.change_tables
+    WHERE source_object_id = OBJECT_ID(N'catalog.Products');
+
+    OPEN M08CdcCursor;
+    FETCH NEXT FROM M08CdcCursor INTO @CaptureInstance;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        EXEC sys.sp_cdc_disable_table
+            @source_schema = N'catalog',
+            @source_name = N'Products',
+            @capture_instance = @CaptureInstance;
+        FETCH NEXT FROM M08CdcCursor INTO @CaptureInstance;
+    END;
+    CLOSE M08CdcCursor;
+    DEALLOCATE M08CdcCursor;
+
+    IF @DisableCdcDatabase = 1
+       AND NOT EXISTS (SELECT 1 FROM cdc.change_tables)
+        EXEC sys.sp_cdc_disable_db;
+END;
+GO
+
+DROP PROCEDURE IF EXISTS api.GetProductsByCategory;
 DROP VIEW IF EXISTS api.InventoryAvailability;
 DROP VIEW IF EXISTS api.ProductCatalog;
 DROP VIEW IF EXISTS api.Products;
 DROP VIEW IF EXISTS api.Categories;
+DROP TABLE IF EXISTS api.CdcRuntimeStatus;
 GO
 
 /* ---------------------------------------------------------------------------
@@ -80,5 +116,5 @@ GO
 
 SET NOEXEC OFF;
 GO
-PRINT N'M08 reset complete: api.* projection views removed; M08 marked NotStarted.';
+PRINT N'M08 reset complete: M08 CDC capture, api.* projection views, and procedure removed; M08 marked NotStarted.';
 GO

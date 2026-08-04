@@ -7,7 +7,8 @@
   "runtime": {
     "rest": { "enabled": true, "path": "/api" },
     "graphql": { "enabled": true, "path": "/graphql" },
-    "host": { "mode": "development" }
+    "host": { "mode": "development" },
+    "cache": { "enabled": true, "ttl-seconds": 30 }
   },
   "entities": {
     "Category": {
@@ -15,6 +16,15 @@
         "object": "api.Categories",
         "type": "view",
         "key-fields": ["CategoryID"]
+      },
+      "cache": { "enabled": true, "ttl-seconds": 30 },
+      "relationships": {
+        "products": {
+          "cardinality": "many",
+          "target.entity": "Product",
+          "source.fields": ["CategoryID"],
+          "target.fields": ["CategoryID"]
+        }
       },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
     },
@@ -30,7 +40,27 @@
         "UnitPrice": "price",
         "UnitsInStock": "stockQuantity"
       },
+      "cache": { "enabled": true, "ttl-seconds": 30 },
+      "relationships": {
+        "category": {
+          "cardinality": "one",
+          "target.entity": "Category",
+          "source.fields": ["CategoryID"],
+          "target.fields": ["CategoryID"]
+        }
+      },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
+    },
+    "ProductsByCategory": {
+      "source": {
+        "object": "api.GetProductsByCategory",
+        "type": "stored-procedure",
+        "parameters": [
+          { "name": "@CategoryID", "default": null }
+        ]
+      },
+      "graphql": { "operation": "query" },
+      "permissions": [{ "role": "anonymous", "actions": ["execute"] }]
     },
     "ProductCatalog": {
       "source": {

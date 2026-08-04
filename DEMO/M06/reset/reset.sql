@@ -50,10 +50,38 @@ END;
 GO
 
 /* ---------------------------------------------------------------------------
-   Teardown module-owned workload only. Dropping the table also drops its
-   covering index. Query Store remains enabled at the database level.
+   Teardown module-owned workload only. Any plan forced by the manual M06
+   Query Store demo is unforced before its workload table is removed. Query
+   Store remains enabled at the database level.
    * 只依相依安全順序清除模組擁有的物件；標準核心不會被刪除。
 --------------------------------------------------------------------------- */
+DECLARE @M06QueryId bigint;
+DECLARE @M06PlanId bigint;
+DECLARE M06ForcedPlanCursor CURSOR LOCAL FAST_FORWARD FOR
+SELECT q.query_id, p.plan_id
+FROM sys.query_store_query AS q
+INNER JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
+INNER JOIN sys.query_store_plan AS p ON p.query_id = q.query_id
+WHERE qt.query_sql_text LIKE N'%DP800 M06 plan forcing probe%'
+  AND p.is_forced_plan = 1;
+
+OPEN M06ForcedPlanCursor;
+FETCH NEXT FROM M06ForcedPlanCursor INTO @M06QueryId, @M06PlanId;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    BEGIN TRY
+        EXEC sys.sp_query_store_unforce_plan @query_id = @M06QueryId, @plan_id = @M06PlanId;
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT(N'M06 reset could not unforce Query Store plan ', @M06PlanId, N': ', ERROR_MESSAGE());
+    END CATCH;
+
+    FETCH NEXT FROM M06ForcedPlanCursor INTO @M06QueryId, @M06PlanId;
+END;
+CLOSE M06ForcedPlanCursor;
+DEALLOCATE M06ForcedPlanCursor;
+GO
+
 DROP TABLE IF EXISTS ops.PerformanceOrders;
 GO
 

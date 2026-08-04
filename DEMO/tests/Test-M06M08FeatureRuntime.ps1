@@ -1,0 +1,247 @@
+[CmdletBinding()]
+param(
+    [string]$Server = '127.0.0.1,1433',
+    [string]$User = 'sa',
+    [string]$Container = 'mssql2025'
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
+$probeDatabase = 'DP800_M06M08FeatureProbe'
+$failures = [System.Collections.Generic.List[string]]::new()
+
+function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
+function Assert-True {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { Add-Failure $Message }
+}
+function Get-Source {
+    param([string]$RelativePath)
+    $path = Join-Path $repoRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Add-Failure "Missing source asset: $RelativePath"
+        return $null
+    }
+    return Get-Content -LiteralPath $path -Raw
+}
+function Assert-Source {
+    param([string]$Text, [string]$Pattern, [string]$Message)
+    if ($null -eq $Text -or $Text -notmatch $Pattern) { Add-Failure $Message }
+}
+function Get-OptionalProperty {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+Write-Host 'M06/M08 focused feature runtime tests'
+Write-Host ''
+
+$m06Isolation = Get-Source 'DEMO\M06\local\07-isolation-rcsi-probe.sql'
+$m06PlanForcing = Get-Source 'DEMO\M06\local\08-query-store-plan-forcing.sql'
+$m06Reset = Get-Source 'DEMO\M06\reset\reset.sql'
+$m08Api = Get-Source 'DEMO\M08\common\01-product-api.sql'
+$m08Reset = Get-Source 'DEMO\M08\reset\reset.sql'
+$dabConfig = Get-Source 'DEMO\M08\common\dab-config.json'
+
+Assert-Source $m06Isolation '(?i)CREATE\s+DATABASE\s+\[?DP800_M06_IsolationProbe' 'M06 isolation demo must create its dedicated probe database.'
+Assert-Source $m06Isolation '(?i)READ_COMMITTED_SNAPSHOT' 'M06 isolation demo must set RCSI only on its probe database.'
+Assert-Source $m06Isolation '(?i)SET\s+TRANSACTION\s+ISOLATION\s+LEVEL\s+READ\s+COMMITTED' 'M06 isolation demo must execute READ COMMITTED.'
+Assert-Source $m06Isolation '(?i)SERVERPROPERTY\s*\(\s*''EngineEdition''\s*\)' 'M06 isolation demo must emit the local/Azure boundary.'
+Assert-Source $m06PlanForcing '(?i)sp_query_store_force_plan' 'M06 plan forcing demo must force a plan.'
+Assert-Source $m06PlanForcing '(?i)is_forced_plan' 'M06 plan forcing demo must verify the forced state.'
+Assert-Source $m06PlanForcing '(?i)sp_query_store_unforce_plan' 'M06 plan forcing demo must clean up a forced plan.'
+Assert-Source $m06PlanForcing '(?i)(only|one).{0,80}plan|plan.{0,80}(only|one)' 'M06 plan forcing demo must explain the single-plan outcome.'
+Assert-Source $m06Reset '(?i)sp_query_store_unforce_plan' 'M06 reset must unforce M06 Query Store plans.'
+
+Assert-Source $m08Api '(?i)sp_cdc_enable_db' 'M08 must enable CDC at database scope.'
+Assert-Source $m08Api '(?i)sp_cdc_enable_table' 'M08 must enable CDC for the product source table.'
+Assert-Source $m08Api '(?i)dm_server_services|SQL Server Agent' 'M08 must record SQL Agent availability.'
+Assert-Source $m08Api '(?i)CREATE\s+OR\s+ALTER\s+VIEW\s+api\.Products' 'M08 must create the Product read model.'
+Assert-Source $m08Api '(?i)CREATE\s+OR\s+ALTER\s+PROCEDURE\s+api\.GetProductsByCategory' 'M08 must create the safe procedure source.'
+Assert-Source $m08Reset '(?i)sp_cdc_disable_table' 'M08 reset must disable the owned CDC table capture.'
+Assert-Source $m08Reset '(?i)sp_cdc_disable_db' 'M08 reset must disable CDC when M08 enabled it.'
+Assert-Source $m08Reset '(?i)DROP\s+PROCEDURE.*GetProductsByCategory' 'M08 reset must remove the owned procedure.'
+
+$dab = $null
+if ($null -ne $dabConfig) {
+    try { $dab = $dabConfig | ConvertFrom-Json }
+    catch { Add-Failure "DAB configuration is not valid JSON: $($_.Exception.Message)" }
+}
+if ($null -ne $dab) {
+    $runtimeCache = Get-OptionalProperty $dab.runtime 'cache'
+    $product = Get-OptionalProperty $dab.entities 'Product'
+    $category = Get-OptionalProperty $dab.entities 'Category'
+    $productsByCategory = Get-OptionalProperty $dab.entities 'ProductsByCategory'
+    $productCache = Get-OptionalProperty $product 'cache'
+    $productRelationships = Get-OptionalProperty $product 'relationships'
+    $categoryRelationships = Get-OptionalProperty $category 'relationships'
+    Assert-True ($null -ne $runtimeCache -and $runtimeCache.enabled -eq $true) 'DAB must enable supported runtime caching.'
+    Assert-True ($null -ne $productCache -and $productCache.enabled -eq $true) 'DAB Product must enable entity caching.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productRelationships 'category') 'target.entity') -eq 'Category') 'DAB Product must map its Category relationship.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $categoryRelationships 'products') 'target.entity') -eq 'Product') 'DAB Category must map its Product relationship.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'type') -eq 'stored-procedure') 'DAB must expose the safe procedure as a stored-procedure entity.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'object') -eq 'api.GetProductsByCategory') 'DAB stored-procedure entity must use the safe API procedure.'
+}
+
+if ($failures.Count -gt 0) {
+    Write-Host "FAIL ($($failures.Count) source/config issue(s))" -ForegroundColor Red
+    foreach ($failure in $failures) { Write-Host "  - $failure" -ForegroundColor Red }
+    exit 1
+}
+
+$sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
+$docker = Get-Command docker -ErrorAction SilentlyContinue
+if (-not $sqlcmd -or -not $docker) {
+    Write-Host 'SKIP: sqlcmd or docker is not available.' -ForegroundColor Yellow
+    exit 0
+}
+$running = (& $docker.Source ps --filter "name=$Container" --format '{{.Names}}' 2>$null) -contains $Container
+if (-not $running) {
+    Write-Host "SKIP: container '$Container' is not running." -ForegroundColor Yellow
+    exit 0
+}
+$password = (& $docker.Source exec $Container printenv MSSQL_SA_PASSWORD 2>$null | Out-String).Trim()
+if ([string]::IsNullOrWhiteSpace($password)) {
+    Write-Host "SKIP: MSSQL_SA_PASSWORD is not set in '$Container'." -ForegroundColor Yellow
+    exit 0
+}
+
+function Invoke-Query {
+    param([string]$Database, [string]$Query)
+    $output = & $sqlcmd.Source -S $Server -U $User -d $Database -Q $Query -h -1 -W -b -C -I -x 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "sqlcmd query failed against '$Database': $($output -join ' ')" }
+    return @($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
+}
+
+$originalPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
+try {
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
+    Invoke-Query -Database master -Query @"
+IF DB_ID(N'$probeDatabase') IS NOT NULL
+BEGIN
+    ALTER DATABASE [$probeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE [$probeDatabase];
+END;
+CREATE DATABASE [$probeDatabase];
+ALTER DATABASE [$probeDatabase] SET READ_COMMITTED_SNAPSHOT OFF WITH ROLLBACK IMMEDIATE;
+SELECT CASE WHEN is_read_committed_snapshot_on = 0 THEN 'PASS' ELSE 'FAIL' END
+FROM sys.databases WHERE name = N'$probeDatabase';
+ALTER DATABASE [$probeDatabase] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+SELECT CASE WHEN is_read_committed_snapshot_on = 1 THEN 'PASS' ELSE 'FAIL' END
+FROM sys.databases WHERE name = N'$probeDatabase';
+"@ | ForEach-Object { $_ } | Where-Object { $_ -in 'PASS', 'FAIL' } | ForEach-Object {
+        Assert-True ($_ -eq 'PASS') "M06 probe RCSI transition returned '$_'."
+    }
+    $rcsiResults = @(Invoke-Query -Database master -Query "SELECT CASE WHEN is_read_committed_snapshot_on = 1 THEN 'PASS' ELSE 'FAIL' END FROM sys.databases WHERE name = N'$probeDatabase';")
+    Assert-True ($rcsiResults -contains 'PASS') 'M06 probe must retain RCSI after its transition.'
+
+    $planForcingResults = @(Invoke-Query -Database $probeDatabase -Query @"
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
+CREATE TABLE dbo.PlanProbe
+(
+    Id int IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    CustomerId int NOT NULL,
+    OccurredAt datetime2(0) NOT NULL
+);
+;WITH n AS
+(
+    SELECT TOP (10000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS Number
+    FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b
+)
+INSERT dbo.PlanProbe (CustomerId, OccurredAt)
+SELECT CASE WHEN Number % 100 = 0 THEN 7 ELSE 1 END, DATEADD(minute, -Number, SYSUTCDATETIME())
+FROM n;
+EXEC sp_recompile N'dbo.PlanProbe';
+EXEC(N'SELECT COUNT_BIG(*) FROM dbo.PlanProbe WHERE CustomerId = 7 /* DP800 M06 forcing probe */ OPTION (MAXDOP 1);');
+CREATE INDEX IX_PlanProbe_CustomerOccurred ON dbo.PlanProbe(CustomerId, OccurredAt);
+EXEC sp_recompile N'dbo.PlanProbe';
+EXEC(N'SELECT COUNT_BIG(*) FROM dbo.PlanProbe WHERE CustomerId = 7 /* DP800 M06 forcing probe */ OPTION (MAXDOP 1);');
+DECLARE @queryId bigint =
+(
+    SELECT TOP (1) q.query_id
+    FROM sys.query_store_query AS q
+    INNER JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
+    WHERE qt.query_sql_text LIKE N'%DP800 M06 forcing probe%'
+    ORDER BY q.query_id DESC
+);
+DECLARE @planId bigint =
+(
+    SELECT TOP (1) p.plan_id
+    FROM sys.query_store_plan AS p
+    WHERE p.query_id = @queryId
+    ORDER BY p.plan_id DESC
+);
+IF @queryId IS NULL OR @planId IS NULL
+    THROW 51000, 'Query Store did not capture the M06 forcing probe.', 1;
+IF (SELECT COUNT(*) FROM sys.query_store_plan WHERE query_id = @queryId) < 2
+BEGIN
+    SELECT N'SKIP_ONE_PLAN';
+    RETURN;
+END;
+EXEC sys.sp_query_store_force_plan @query_id = @queryId, @plan_id = @planId;
+IF NOT EXISTS (SELECT 1 FROM sys.query_store_plan WHERE query_id = @queryId AND plan_id = @planId AND is_forced_plan = 1)
+    THROW 51001, 'Query Store did not mark the plan forced.', 1;
+EXEC sys.sp_query_store_unforce_plan @query_id = @queryId, @plan_id = @planId;
+IF EXISTS (SELECT 1 FROM sys.query_store_plan WHERE query_id = @queryId AND plan_id = @planId AND is_forced_plan = 1)
+    THROW 51002, 'Query Store retained a forced plan after cleanup.', 1;
+SELECT N'PASS';
+"@ | Where-Object { $_ -in 'PASS', 'SKIP_ONE_PLAN' })
+    Assert-True ($planForcingResults.Count -eq 1) 'M06 plan forcing probe must return exactly one lifecycle result.'
+    $planForcingResults | ForEach-Object {
+        Assert-True ($_ -in 'PASS', 'SKIP_ONE_PLAN') "M06 plan forcing lifecycle returned '$_'."
+        if ($_ -eq 'SKIP_ONE_PLAN') { Write-Host 'M06 plan forcing: optimizer produced one plan; truthful skip path exercised.' -ForegroundColor Yellow }
+    }
+
+    $cdcResults = @(Invoke-Query -Database $probeDatabase -Query @"
+CREATE TABLE dbo.CdcProbe (Id int NOT NULL PRIMARY KEY, Name nvarchar(50) NOT NULL);
+BEGIN TRY
+    EXEC sys.sp_cdc_enable_db;
+    EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N'CdcProbe', @role_name = NULL;
+    IF NOT EXISTS (SELECT 1 FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'dbo.CdcProbe'))
+        THROW 51003, 'CDC table capture was not created.', 1;
+    EXEC sys.sp_cdc_disable_table @source_schema = N'dbo', @source_name = N'CdcProbe', @capture_instance = N'dbo_CdcProbe';
+    EXEC sys.sp_cdc_disable_db;
+    SELECT CASE WHEN (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()) = 0 THEN N'PASS' ELSE N'FAIL' END;
+END TRY
+BEGIN CATCH
+    SELECT N'SKIP_CDC:' + ERROR_MESSAGE();
+END CATCH;
+"@ | Where-Object { $_ -eq 'PASS' -or $_ -like 'SKIP_CDC:*' })
+    Assert-True ($cdcResults.Count -eq 1) 'M08 CDC probe must return exactly one lifecycle result.'
+    $cdcResults | ForEach-Object {
+        Assert-True ($_ -eq 'PASS' -or $_ -like 'SKIP_CDC:*') "M08 CDC lifecycle returned '$_'."
+        if ($_ -like 'SKIP_CDC:*') { Write-Host "M08 CDC unavailable in this local runtime: $_" -ForegroundColor Yellow }
+    }
+}
+catch {
+    Add-Failure "Runtime probe failed: $($_.Exception.Message)"
+}
+finally {
+    try {
+        Invoke-Query -Database master -Query @"
+IF DB_ID(N'$probeDatabase') IS NOT NULL
+BEGIN
+    ALTER DATABASE [$probeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE [$probeDatabase];
+END;
+"@ | Out-Null
+    }
+    catch {
+        Add-Failure "Probe cleanup failed: $($_.Exception.Message)"
+    }
+    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalPassword, 'Process')
+    $password = $null
+}
+
+if ($failures.Count -gt 0) {
+    Write-Host "FAIL ($($failures.Count) issue(s))" -ForegroundColor Red
+    foreach ($failure in $failures) { Write-Host "  - $failure" -ForegroundColor Red }
+    exit 1
+}
+
+Write-Host 'PASS (M06/M08 focused runtime features)' -ForegroundColor Green

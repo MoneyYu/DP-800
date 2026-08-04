@@ -24,6 +24,120 @@ DROP TABLE IF EXISTS dbo.ApiProducts;
 DROP TABLE IF EXISTS dbo.ApiCategories;
 GO
 
+IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NULL
+BEGIN
+    CREATE TABLE api.CdcRuntimeStatus
+    (
+        CdcRuntimeStatusID tinyint NOT NULL
+            CONSTRAINT PK_CdcRuntimeStatus PRIMARY KEY
+            CONSTRAINT CK_CdcRuntimeStatus_Singleton CHECK (CdcRuntimeStatusID = 1),
+        RecordedAtUtc datetime2(0) NOT NULL,
+        EngineEdition int NOT NULL,
+        SqlAgentAvailable bit NOT NULL,
+        DatabaseCdcEnabledByModule bit NOT NULL,
+        ProductCaptureEnabled bit NOT NULL,
+        Behavior nvarchar(1000) NOT NULL
+    );
+END;
+GO
+
+DECLARE @engineEdition int = CONVERT(int, SERVERPROPERTY('EngineEdition'));
+DECLARE @sqlAgentAvailable bit = 0;
+DECLARE @databaseCdcEnabledByModule bit = 0;
+DECLARE @productCaptureEnabled bit = 0;
+DECLARE @behavior nvarchar(1000);
+
+/* Preserve the ownership marker across idempotent re-runs. Without it, a
+   second run would forget that M08, rather than a pre-existing feature, enabled
+   CDC at database scope. */
+SELECT @databaseCdcEnabledByModule = DatabaseCdcEnabledByModule
+FROM api.CdcRuntimeStatus
+WHERE CdcRuntimeStatusID = 1;
+
+/* Azure SQL Database manages CDC capture. Local SQL Server needs a running
+   SQL Server Agent for capture/cleanup jobs; record that actual boundary. */
+IF @engineEdition = 5
+    SET @sqlAgentAvailable = 1;
+ELSE
+BEGIN
+    BEGIN TRY
+        IF EXISTS
+        (
+            SELECT 1
+            FROM sys.dm_server_services
+            WHERE servicename LIKE N'SQL Server Agent%'
+              AND status_desc = N'Running'
+        )
+            SET @sqlAgentAvailable = 1;
+    END TRY
+    BEGIN CATCH
+        SET @sqlAgentAvailable = 0;
+    END CATCH;
+END;
+
+BEGIN TRY
+    IF (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()) = 0
+    BEGIN
+        EXEC sys.sp_cdc_enable_db;
+        SET @databaseCdcEnabledByModule = 1;
+    END;
+
+    IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+       AND NOT EXISTS
+       (
+           SELECT 1
+           FROM cdc.change_tables
+           WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+       )
+        EXEC sys.sp_cdc_enable_table
+            @source_schema = N'catalog',
+            @source_name = N'Products',
+            @role_name = NULL,
+            @supports_net_changes = 1;
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM cdc.change_tables
+        WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+    )
+        SET @productCaptureEnabled = 1;
+
+    SET @behavior =
+        CASE
+            WHEN @productCaptureEnabled = 0 THEN N'CDC was not enabled for catalog.Products.'
+            WHEN @engineEdition = 5 THEN N'Azure SQL Database manages CDC capture; no SQL Server Agent service is expected.'
+            WHEN @sqlAgentAvailable = 1 THEN N'CDC capture is enabled and SQL Server Agent is running.'
+            ELSE N'CDC metadata is enabled, but local capture/cleanup jobs wait until SQL Server Agent is available.'
+        END;
+END TRY
+BEGIN CATCH
+    SET @behavior = CONCAT(N'CDC enablement was skipped: ', ERROR_MESSAGE());
+END CATCH;
+
+DELETE FROM api.CdcRuntimeStatus;
+INSERT api.CdcRuntimeStatus
+(
+    CdcRuntimeStatusID,
+    RecordedAtUtc,
+    EngineEdition,
+    SqlAgentAvailable,
+    DatabaseCdcEnabledByModule,
+    ProductCaptureEnabled,
+    Behavior
+)
+VALUES
+(
+    1,
+    SYSUTCDATETIME(),
+    @engineEdition,
+    @sqlAgentAvailable,
+    @databaseCdcEnabledByModule,
+    @productCaptureEnabled,
+    @behavior
+);
+GO
+
 CREATE OR ALTER VIEW api.Categories
 AS
 SELECT
@@ -84,5 +198,35 @@ FROM catalog.Inventory AS i
 INNER JOIN catalog.Products AS p ON p.ProductID = i.ProductID;
 GO
 
-PRINT N'M08 api.* views over the AdventureGearAI catalog are ready.';
+CREATE OR ALTER PROCEDURE api.GetProductsByCategory
+    @CategoryID int = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        ProductID,
+        ProductName,
+        CategoryID,
+        Sku,
+        UnitPrice,
+        UnitsInStock,
+        IsActive
+    FROM api.Products
+    WHERE @CategoryID IS NULL OR CategoryID = @CategoryID
+    ORDER BY ProductID;
+END;
+GO
+
+SELECT
+    RecordedAtUtc,
+    EngineEdition,
+    SqlAgentAvailable,
+    DatabaseCdcEnabledByModule,
+    ProductCaptureEnabled,
+    Behavior
+FROM api.CdcRuntimeStatus;
+GO
+
+PRINT N'M08 api.* views, CDC status, and safe product procedure are ready.';
 GO
