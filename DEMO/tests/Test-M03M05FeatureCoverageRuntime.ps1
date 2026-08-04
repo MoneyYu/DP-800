@@ -19,11 +19,32 @@ $failures = [System.Collections.Generic.List[string]]::new()
 
 function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
 function Invoke-Query {
-    param([string]$Database, [string]$Query)
+    param(
+        [string]$Database,
+        [string]$Query,
+        [hashtable]$SqlCmdVariables
+    )
 
-    $result = & $sqlcmd.Source -S $Server -U $User -d $Database -Q $Query -h -1 -W -b -C -I -x 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "sqlcmd query failed against '$Database': $($result -join ' ')" }
-    return @($result | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
+    $originalVariables = @{}
+    try {
+        if ($SqlCmdVariables) {
+            foreach ($name in $SqlCmdVariables.Keys) {
+                $originalVariables[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+                [Environment]::SetEnvironmentVariable($name, [string]$SqlCmdVariables[$name], 'Process')
+            }
+        }
+
+        $arguments = @('-S', $Server, '-U', $User, '-d', $Database, '-Q', $Query, '-h', '-1', '-W', '-b', '-C', '-I')
+        if (-not $SqlCmdVariables) { $arguments += '-x' }
+        $result = & $sqlcmd.Source @arguments 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "sqlcmd query failed against '$Database': $($result -join ' ')" }
+        return @($result | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
+    }
+    finally {
+        foreach ($name in $originalVariables.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $originalVariables[$name], 'Process')
+        }
+    }
 }
 function Invoke-SqlScript {
     param([string]$Database, [string]$Path)
@@ -42,6 +63,11 @@ function Invoke-SqlScriptExpectFailure {
 function Get-Scalar {
     param([string]$Database, [string]$Query)
     return (Invoke-Query -Database $Database -Query $Query | Select-Object -First 1)
+}
+function New-TestMasterKeyPassword {
+    $bytes = [byte[]]::new(48)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    return "D800!t$([Convert]::ToHexString($bytes))"
 }
 
 $sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
@@ -65,6 +91,9 @@ $createdTdeCollisionDatabase = $false
 $createdTdeCollisionCertificate = $false
 $masterKeyExistedBeforeTde = $false
 $masterKeyIdentityBeforeTde = $null
+$createdTestMasterKey = $false
+$testMasterKeyPassword = $null
+$testMasterKeyIdentity = $null
 $adventureGearEncryptionBeforeTde = $null
 
 try {
@@ -179,10 +208,42 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeCerti
 "@) -eq 'YES') {
             Add-Failure 'M05 TDE collision test requires no pre-existing DP800 TDE database or certificate.'
         }
-        elseif (-not $masterKeyExistedBeforeTde) {
-            Add-Failure 'M05 TDE happy-path test requires a pre-existing master database master key; the demo must not create one.'
-        }
         else {
+            if (-not $masterKeyExistedBeforeTde) {
+                # The production demo must reject an absent key rather than
+                # creating server-wide cryptographic infrastructure.
+                $absentKeyOutput = Invoke-SqlScriptExpectFailure -Database 'master' -Path $m05Tde
+                if ($absentKeyOutput -notmatch '51052|requires an existing database master key') {
+                    Add-Failure 'M05 TDE absent-key preflight did not report the required master database master key.'
+                }
+                if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM sys.symmetric_keys
+    WHERE name = N'##MS_DatabaseMasterKey##'
+) THEN N'FAIL' ELSE N'PASS' END;
+"@) -ne 'PASS') {
+                    Add-Failure 'M05 TDE absent-key preflight created a master database master key.'
+                }
+
+                $testMasterKeyPassword = New-TestMasterKeyPassword
+                Invoke-Query -Database 'master' -Query @'
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'$(TdeTestMasterKeyPassword)';
+'@ -SqlCmdVariables @{ TdeTestMasterKeyPassword = $testMasterKeyPassword } | Out-Null
+                $createdTestMasterKey = $true
+                $testMasterKeyIdentity = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONVERT(nvarchar(36), key_guid)
+FROM sys.symmetric_keys
+WHERE name = N'##MS_DatabaseMasterKey##';
+"@
+                if ([string]::IsNullOrWhiteSpace($testMasterKeyIdentity)) {
+                    Add-Failure 'M05 TDE test could not identify its temporary master database master key.'
+                }
+            }
+
             Invoke-Query -Database 'master' -Query @"
 CREATE CERTIFICATE [$tdeCertificate]
 WITH SUBJECT = N'DP-800 M05 runtime collision fixture';
@@ -234,13 +295,13 @@ DROP DATABASE [$tdeDatabase];
             Invoke-Query -Database 'master' -Query "DROP CERTIFICATE [$tdeCertificate];" | Out-Null
             $createdTdeCollisionCertificate = $false
 
-        $tdeOutput = Invoke-SqlScript -Database 'master' -Path $m05Tde
-        if ($tdeOutput -notmatch '(?s)DP800_M05_TdeDemo.*(?:ENCRYPTION_IN_PROGRESS|ENCRYPTED)') {
-            Add-Failure 'M05 TDE demo did not return an encryption-state verification row.'
-        }
-        if ((Get-Scalar -Database 'master' -Query "SET NOCOUNT ON; SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NULL THEN N'PASS' ELSE N'FAIL' END;") -ne 'PASS') {
-            Add-Failure "M05 TDE cleanup left $tdeDatabase behind."
-        }
+            $tdeOutput = Invoke-SqlScript -Database 'master' -Path $m05Tde
+            if ($tdeOutput -notmatch '(?s)DP800_M05_TdeDemo.*(?:ENCRYPTION_IN_PROGRESS|ENCRYPTED)') {
+                Add-Failure 'M05 TDE demo did not return an encryption-state verification row.'
+            }
+            if ((Get-Scalar -Database 'master' -Query "SET NOCOUNT ON; SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NULL THEN N'PASS' ELSE N'FAIL' END;") -ne 'PASS') {
+                Add-Failure "M05 TDE cleanup left $tdeDatabase behind."
+            }
             if ((Get-Scalar -Database 'master' -Query @"
 SET NOCOUNT ON;
 SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeCertificate')
@@ -248,14 +309,20 @@ SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeC
 "@) -ne 'PASS') {
                 Add-Failure "M05 TDE cleanup left $tdeCertificate behind."
             }
-            if (-not $masterKeyExistedBeforeTde -or (Get-Scalar -Database 'master' -Query @"
+            $expectedMasterKeyIdentity = if ($masterKeyExistedBeforeTde) { $masterKeyIdentityBeforeTde } else { $testMasterKeyIdentity }
+            $masterKeyIdentityAfterTde = Get-Scalar -Database 'master' -Query @"
 SET NOCOUNT ON;
-SELECT CASE WHEN CONVERT(nvarchar(36), key_guid) = N'$masterKeyIdentityBeforeTde'
-            THEN N'PASS' ELSE N'FAIL' END
+SELECT CONVERT(nvarchar(36), key_guid)
 FROM sys.symmetric_keys
 WHERE name = N'##MS_DatabaseMasterKey##';
-"@) -ne 'PASS') {
-                Add-Failure 'M05 TDE demo created or removed the master database master key.'
+"@
+            if ($masterKeyIdentityAfterTde -ne $expectedMasterKeyIdentity) {
+                if ($masterKeyExistedBeforeTde) {
+                    Add-Failure 'M05 TDE demo changed or removed the pre-existing master database master key.'
+                }
+                else {
+                    Add-Failure 'M05 TDE demo changed or removed the test-owned master database master key.'
+                }
             }
             if ((Get-Scalar -Database 'master' -Query @"
 SET NOCOUNT ON;
@@ -286,21 +353,53 @@ catch {
     Add-Failure $_.Exception.Message
 }
 finally {
-    # Collision fixtures are deleted only when this invocation created them.
+    # Collision fixtures and the temporary master key are deleted only when
+    # this invocation created them.
     try {
         if ($createdTdeCollisionDatabase) {
             Invoke-Query -Database 'master' -Query @"
 ALTER DATABASE [$tdeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
 DROP DATABASE [$tdeDatabase];
 "@ | Out-Null
+            $createdTdeCollisionDatabase = $false
         }
         if ($createdTdeCollisionCertificate) {
             Invoke-Query -Database 'master' -Query "DROP CERTIFICATE [$tdeCertificate];" | Out-Null
+            $createdTdeCollisionCertificate = $false
+        }
+        if ($createdTestMasterKey) {
+            $tdeResourcesRemain = (Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NOT NULL
+                  OR EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeCertificate')
+            THEN N'YES' ELSE N'NO' END;
+"@) -eq 'YES'
+            if ($tdeResourcesRemain) {
+                Add-Failure 'M05 TDE test retained its temporary master key because TDE resources were not fully cleaned up.'
+            }
+            else {
+                Invoke-Query -Database 'master' -Query 'DROP MASTER KEY;' | Out-Null
+                if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM sys.symmetric_keys
+    WHERE name = N'##MS_DatabaseMasterKey##'
+) THEN N'FAIL' ELSE N'PASS' END;
+"@) -ne 'PASS') {
+                    Add-Failure 'M05 TDE test-owned master database master key was not removed.'
+                }
+                else {
+                    $createdTestMasterKey = $false
+                }
+            }
         }
     }
     catch { Add-Failure "TDE test cleanup failed: $($_.Exception.Message)" }
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalSqlcmdPassword, 'Process')
     $testPassword = $null
+    $testMasterKeyPassword = $null
 }
 
 if ($failures.Count -gt 0) {
