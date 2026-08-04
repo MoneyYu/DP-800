@@ -22,15 +22,28 @@ BEGIN
             CONSTRAINT PK_M06QueryStoreRuntimeState PRIMARY KEY
             CONSTRAINT CK_M06QueryStoreRuntimeState_Singleton CHECK (M06QueryStoreRuntimeStateID = 1),
         PriorQueryCaptureMode nvarchar(60) NOT NULL,
+        ExpectedDemoQueryCaptureMode nvarchar(60) NOT NULL,
+        RecoveryPhase nvarchar(30) NOT NULL
+            CONSTRAINT CK_M06QueryStoreRuntimeState_RecoveryPhase
+                CHECK (RecoveryPhase IN (N'Active', N'Restored')),
         RecordedAtUtc datetime2(0) NOT NULL
     );
 END;
+
+IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'ExpectedDemoQueryCaptureMode') IS NULL
+    ALTER TABLE ops.M06QueryStoreRuntimeState
+        ADD ExpectedDemoQueryCaptureMode nvarchar(60) NULL;
+
+IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'RecoveryPhase') IS NULL
+    ALTER TABLE ops.M06QueryStoreRuntimeState
+        ADD RecoveryPhase nvarchar(30) NULL;
 
 DECLARE @priorQueryCaptureMode nvarchar(60) =
 (
     SELECT query_capture_mode_desc
     FROM sys.database_query_store_options
 );
+DECLARE @expectedDemoQueryCaptureMode nvarchar(60) = N'ALL';
 IF @priorQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
     THROW 51003, N'Query Store did not report a supported prior QUERY_CAPTURE_MODE.', 1;
 
@@ -39,9 +52,11 @@ INSERT ops.M06QueryStoreRuntimeState
 (
     M06QueryStoreRuntimeStateID,
     PriorQueryCaptureMode,
+    ExpectedDemoQueryCaptureMode,
+    RecoveryPhase,
     RecordedAtUtc
 )
-VALUES (1, @priorQueryCaptureMode, SYSUTCDATETIME());
+VALUES (1, @priorQueryCaptureMode, @expectedDemoQueryCaptureMode, N'Active', SYSUTCDATETIME());
 
 ALTER DATABASE CURRENT SET QUERY_STORE = ON
 (
@@ -134,19 +149,26 @@ BEGIN CATCH
         END CATCH;
     END;
 
-    BEGIN TRY
-        DECLARE @restoreAfterError nvarchar(max) =
-            N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @priorQueryCaptureMode + N');';
-        EXEC sys.sp_executesql @restoreAfterError;
-        SET @captureModeRestored = 1;
-    END TRY
-    BEGIN CATCH
-        PRINT CONCAT(N'M06 cleanup could not restore Query Store capture mode: ', ERROR_MESSAGE());
-    END CATCH;
+    IF @forced = 0
+    BEGIN
+        BEGIN TRY
+            DECLARE @restoreAfterError nvarchar(max) =
+                N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @priorQueryCaptureMode + N');';
+            EXEC sys.sp_executesql @restoreAfterError;
+            SET @captureModeRestored = 1;
 
-    IF @forced = 0 AND @captureModeRestored = 1
-        DELETE FROM ops.M06QueryStoreRuntimeState
-        WHERE M06QueryStoreRuntimeStateID = 1;
+            UPDATE ops.M06QueryStoreRuntimeState
+            SET RecoveryPhase = N'Restored'
+            WHERE M06QueryStoreRuntimeStateID = 1
+              AND RecoveryPhase = N'Active';
+
+            DELETE FROM ops.M06QueryStoreRuntimeState
+            WHERE M06QueryStoreRuntimeStateID = 1;
+        END TRY
+        BEGIN CATCH
+            PRINT CONCAT(N'M06 cleanup could not restore Query Store capture mode: ', ERROR_MESSAGE());
+        END CATCH;
+    END;
 
     THROW;
 END CATCH;
@@ -157,6 +179,13 @@ EXEC sys.sp_executesql @restoreAfterDemo;
 SET @captureModeRestored = 1;
 
 IF @forced = 0 AND @captureModeRestored = 1
+BEGIN
+    UPDATE ops.M06QueryStoreRuntimeState
+    SET RecoveryPhase = N'Restored'
+    WHERE M06QueryStoreRuntimeStateID = 1
+      AND RecoveryPhase = N'Active';
+
     DELETE FROM ops.M06QueryStoreRuntimeState
     WHERE M06QueryStoreRuntimeStateID = 1;
+END;
 GO

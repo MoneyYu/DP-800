@@ -69,8 +69,12 @@ Assert-Source $m06PlanForcing '(?i)sp_query_store_unforce_plan' 'M06 plan forcin
 Assert-Source $m06PlanForcing '(?i)(only|one).{0,80}plan|plan.{0,80}(only|one)' 'M06 plan forcing demo must explain the single-plan outcome.'
 Assert-Source $m06PlanForcing '(?i)query_capture_mode_desc' 'M06 plan forcing demo must capture the prior Query Store capture mode.'
 Assert-Source $m06PlanForcing '(?i)M06QueryStoreRuntimeState' 'M06 plan forcing demo must persist its prior capture mode for reset recovery.'
+Assert-Source $m06PlanForcing '(?i)ExpectedDemoQueryCaptureMode' 'M06 plan forcing demo must persist the Query Store mode expected while recovery is active.'
+Assert-Source $m06PlanForcing '(?i)RecoveryPhase' 'M06 plan forcing demo must record an active recovery phase.'
 Assert-Source $m06Reset '(?i)sp_query_store_unforce_plan' 'M06 reset must unforce M06 Query Store plans.'
 Assert-Source $m06Reset '(?i)M06QueryStoreRuntimeState' 'M06 reset must restore the Query Store capture mode recorded by M06.'
+Assert-Source $m06Reset '(?i)ExpectedDemoQueryCaptureMode' 'M06 reset must restore Query Store capture mode only from active matching recovery metadata.'
+Assert-Source $m06Reset '(?i)COL_LENGTH\s*\(' 'M06 reset must migrate legacy Query Store recovery metadata idempotently.'
 
 Assert-Source $m08Api '(?i)sp_cdc_enable_db' 'M08 must enable CDC at database scope.'
 Assert-Source $m08Api '(?i)sp_cdc_enable_table' 'M08 must enable CDC for the product source table.'
@@ -122,13 +126,29 @@ if ($null -ne $dab) {
     $product = Get-OptionalProperty $dab.entities 'Product'
     $category = Get-OptionalProperty $dab.entities 'Category'
     $productsByCategory = Get-OptionalProperty $dab.entities 'ProductsByCategory'
+    $productMappings = Get-OptionalProperty $product 'mappings'
     $productCache = Get-OptionalProperty $product 'cache'
     $productRelationships = Get-OptionalProperty $product 'relationships'
     $categoryRelationships = Get-OptionalProperty $category 'relationships'
+    $productCategoryRelationship = Get-OptionalProperty $productRelationships 'category'
+    $categoryProductsRelationship = Get-OptionalProperty $categoryRelationships 'products'
     Assert-True ($null -ne $runtimeCache -and $runtimeCache.enabled -eq $true) 'DAB must enable supported runtime caching.'
     Assert-True ($null -ne $productCache -and $productCache.enabled -eq $true) 'DAB Product must enable entity caching.'
-    Assert-True ($null -eq $productRelationships) 'DAB must omit relationships on view-backed Product entities so metadata validation can start.'
-    Assert-True ($null -eq $categoryRelationships) 'DAB must omit relationships on view-backed Category entities so metadata validation can start.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $category 'source') 'object') -eq 'catalog.Categories') 'DAB Category must use the canonical table so the DAB CLI can validate relationships.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $category 'source') 'type') -eq 'table') 'DAB Category relationship source must be a table.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $product 'source') 'object') -eq 'catalog.Products') 'DAB Product must use the canonical table so the DAB CLI can validate relationships.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $product 'source') 'type') -eq 'table') 'DAB Product relationship source must be a table.'
+    Assert-True ($null -ne $categoryProductsRelationship) 'DAB Category must define its products relationship.'
+    Assert-True ([string](Get-OptionalProperty $categoryProductsRelationship 'cardinality') -eq 'many') 'DAB Category.products relationship must have many cardinality.'
+    Assert-True ([string](Get-OptionalProperty $categoryProductsRelationship 'target.entity') -eq 'Product') 'DAB Category.products relationship must target Product.'
+    Assert-True (@(Get-OptionalProperty $categoryProductsRelationship 'source.fields') -join ',' -eq 'CategoryID') 'DAB Category.products relationship must use CategoryID as its source field.'
+    Assert-True (@(Get-OptionalProperty $categoryProductsRelationship 'target.fields') -join ',' -eq 'CategoryID') 'DAB Category.products relationship must use Product.CategoryID as its target field.'
+    Assert-True ($null -ne $productCategoryRelationship) 'DAB Product must define its category relationship.'
+    Assert-True ([string](Get-OptionalProperty $productCategoryRelationship 'cardinality') -eq 'one') 'DAB Product.category relationship must have one cardinality.'
+    Assert-True ([string](Get-OptionalProperty $productCategoryRelationship 'target.entity') -eq 'Category') 'DAB Product.category relationship must target Category.'
+    Assert-True (@(Get-OptionalProperty $productCategoryRelationship 'source.fields') -join ',' -eq 'CategoryID') 'DAB Product.category relationship must use CategoryID as its source field.'
+    Assert-True (@(Get-OptionalProperty $productCategoryRelationship 'target.fields') -join ',' -eq 'CategoryID') 'DAB Product.category relationship must use Category.CategoryID as its target field.'
+    Assert-True ($null -eq (Get-OptionalProperty $productMappings 'CategoryID')) 'DAB Product mappings must leave CategoryID available as a relationship source field.'
     Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'type') -eq 'stored-procedure') 'DAB must expose the safe procedure as a stored-procedure entity.'
     Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'object') -eq 'api.GetProductsByCategory') 'DAB stored-procedure entity must use the safe API procedure.'
     $procedureParameters = @(Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'parameters')
@@ -258,9 +278,70 @@ FROM sys.database_query_store_options;
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\local\08-query-store-plan-forcing.sql' | Out-Null
     $postDemoCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
     Assert-True (($postDemoCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 plan-forcing demo must restore the prior Query Store capture mode.'
+    $completedRecoveryStateRows = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT COUNT(*)
+FROM ops.M06QueryStoreRuntimeState
+WHERE M06QueryStoreRuntimeStateID = 1;
+"@)
+    Assert-True (($completedRecoveryStateRows | Select-Object -First 1) -eq '0') 'Successful M06 plan-forcing cleanup must clear its Query Store recovery state.'
+    Invoke-Query -Database AdventureGearAI -Query @"
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = NONE);
+"@ | Out-Null
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
     $postResetCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
-    Assert-True (($postResetCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 reset must preserve the pre-demo Query Store capture mode.'
+    Assert-True (($postResetCaptureMode | Select-Object -First 1) -eq 'NONE') 'M06 reset must not revert a Query Store capture mode configured after successful plan-forcing cleanup.'
+
+    Invoke-Query -Database AdventureGearAI -Query @"
+CREATE TABLE ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID tinyint NOT NULL
+        CONSTRAINT PK_M06QueryStoreRuntimeState PRIMARY KEY
+        CONSTRAINT CK_M06QueryStoreRuntimeState_Singleton CHECK (M06QueryStoreRuntimeStateID = 1),
+    PriorQueryCaptureMode nvarchar(60) NOT NULL,
+    RecordedAtUtc datetime2(0) NOT NULL
+);
+INSERT ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID,
+    PriorQueryCaptureMode,
+    RecordedAtUtc
+)
+VALUES (1, N'AUTO', SYSUTCDATETIME());
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = NONE);
+"@ | Out-Null
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
+    $staleRecoveryCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
+    Assert-True (($staleRecoveryCaptureMode | Select-Object -First 1) -eq 'NONE') 'M06 reset must preserve a user capture mode when stale active recovery metadata no longer matches its expected demo mode.'
+    $staleRecoveryStateRemoved = @(Invoke-Query -Database AdventureGearAI -Query "SELECT CASE WHEN OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL THEN N'PASS' ELSE N'FAIL' END;")
+    Assert-True ($staleRecoveryStateRemoved -contains 'PASS') 'M06 reset must clear stale Query Store recovery metadata without changing the user capture mode.'
+
+    Invoke-Query -Database AdventureGearAI -Query @"
+CREATE TABLE ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID tinyint NOT NULL
+        CONSTRAINT PK_M06QueryStoreRuntimeState PRIMARY KEY
+        CONSTRAINT CK_M06QueryStoreRuntimeState_Singleton CHECK (M06QueryStoreRuntimeStateID = 1),
+    PriorQueryCaptureMode nvarchar(60) NOT NULL,
+    ExpectedDemoQueryCaptureMode nvarchar(60) NOT NULL,
+    RecoveryPhase nvarchar(30) NOT NULL,
+    RecordedAtUtc datetime2(0) NOT NULL
+);
+INSERT ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID,
+    PriorQueryCaptureMode,
+    ExpectedDemoQueryCaptureMode,
+    RecoveryPhase,
+    RecordedAtUtc
+)
+VALUES (1, N'AUTO', N'ALL', N'Active', SYSUTCDATETIME());
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
+"@ | Out-Null
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
+    $recoveredCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
+    Assert-True (($recoveredCaptureMode | Select-Object -First 1) -eq 'AUTO') 'M06 reset must restore an interrupted active Query Store recovery state when its expected demo mode remains active.'
+    $recoveryStateRemoved = @(Invoke-Query -Database AdventureGearAI -Query "SELECT CASE WHEN OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL THEN N'PASS' ELSE N'FAIL' END;")
+    Assert-True ($recoveryStateRemoved -contains 'PASS') 'M06 reset must clear completed active Query Store recovery state.'
 
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
     $cdcInitial = @(Invoke-Query -Database AdventureGearAI -Query "SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID();")

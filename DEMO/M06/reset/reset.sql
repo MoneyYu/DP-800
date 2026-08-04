@@ -58,14 +58,36 @@ GO
 DECLARE @M06QueryId bigint;
 DECLARE @M06PlanId bigint;
 DECLARE @M06PriorQueryCaptureMode nvarchar(60);
+DECLARE @M06ExpectedDemoQueryCaptureMode nvarchar(60);
+DECLARE @M06RecoveryPhase nvarchar(30);
+DECLARE @M06CurrentQueryCaptureMode nvarchar(60);
 DECLARE @M06RecoveryStateActive bit = 0;
 DECLARE @M06UnforceCompleted bit = 1;
 IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'ExpectedDemoQueryCaptureMode') IS NULL
+        ALTER TABLE ops.M06QueryStoreRuntimeState
+            ADD ExpectedDemoQueryCaptureMode nvarchar(60) NULL;
+
+    IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'RecoveryPhase') IS NULL
+        ALTER TABLE ops.M06QueryStoreRuntimeState
+            ADD RecoveryPhase nvarchar(30) NULL;
+
+    UPDATE ops.M06QueryStoreRuntimeState
+    SET ExpectedDemoQueryCaptureMode = N'ALL',
+        RecoveryPhase = N'Active'
+    WHERE M06QueryStoreRuntimeStateID = 1
+      AND ExpectedDemoQueryCaptureMode IS NULL
+      AND RecoveryPhase IS NULL;
+
     SELECT
         @M06PriorQueryCaptureMode = PriorQueryCaptureMode,
-        @M06RecoveryStateActive = 1
+        @M06ExpectedDemoQueryCaptureMode = ExpectedDemoQueryCaptureMode,
+        @M06RecoveryPhase = RecoveryPhase,
+        @M06RecoveryStateActive = CASE WHEN RecoveryPhase = N'Active' THEN 1 ELSE 0 END
     FROM ops.M06QueryStoreRuntimeState
     WHERE M06QueryStoreRuntimeStateID = 1;
+END;
 
 DECLARE M06ForcedPlanCursor CURSOR LOCAL FAST_FORWARD FOR
 SELECT q.query_id, p.plan_id
@@ -100,10 +122,22 @@ BEGIN
     IF @M06PriorQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
         THROW 51005, N'M06 reset found an invalid Query Store recovery capture mode; recovery state was retained.', 1;
 
-    DECLARE @M06RestoreQueryCaptureMode nvarchar(max) =
-        N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @M06PriorQueryCaptureMode + N');';
-    EXEC sys.sp_executesql @M06RestoreQueryCaptureMode;
+    IF @M06ExpectedDemoQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
+        THROW 51006, N'M06 reset found an invalid expected Query Store recovery mode; recovery state was retained.', 1;
 
+    SELECT @M06CurrentQueryCaptureMode = query_capture_mode_desc
+    FROM sys.database_query_store_options;
+
+    IF @M06CurrentQueryCaptureMode = @M06ExpectedDemoQueryCaptureMode
+    BEGIN
+        DECLARE @M06RestoreQueryCaptureMode nvarchar(max) =
+            N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @M06PriorQueryCaptureMode + N');';
+        EXEC sys.sp_executesql @M06RestoreQueryCaptureMode;
+    END;
+END;
+
+IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
+BEGIN
     DELETE FROM ops.M06QueryStoreRuntimeState
     WHERE M06QueryStoreRuntimeStateID = 1;
 END;
