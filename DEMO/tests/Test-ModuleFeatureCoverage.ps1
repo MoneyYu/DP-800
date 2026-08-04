@@ -33,281 +33,34 @@ function Get-RequiredText {
     param([string]$RelativePath)
     return Get-Text -Path (Join-Path $repoRoot $RelativePath)
 }
-function Remove-DockerfileComments {
+function Normalize-DockerfileSource {
     param([AllowEmptyString()][string]$Text)
 
-    # Dockerfile comments occupy a complete physical line. Deliberately leave
-    # inline text alone here so URL fragments such as https://example/#anchor
-    # remain available to the shell-command parser.
-    return (($Text -split "`r?`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n")
+    # This test deliberately recognizes only the repository's canonical recipe.
+    # Strip Dockerfile comment lines, then flatten only explicit continuations.
+    $withoutComments = $Text -replace '(?m)^[ \t]*#.*(?:\r?\n|$)', ''
+    return $withoutComments -replace '\\\r?\n[ \t]*', ' '
 }
-function Remove-ShellComment {
-    param([string]$Command)
-
-    $quote = [char]0
-    $escaped = $false
-    for ($index = 0; $index -lt $Command.Length; $index++) {
-        $character = $Command[$index]
-        if ($quote -ne [char]0) {
-            if ($escaped) {
-                $escaped = $false
-                continue
-            }
-            if ($character -eq '\') {
-                $escaped = $true
-                continue
-            }
-            if ($character -eq $quote) { $quote = [char]0 }
-            continue
-        }
-
-        if ($character -eq '"' -or $character -eq "'") {
-            $quote = $character
-            continue
-        }
-        if ($character -eq '#' -and (
-                $index -eq 0 -or
-                [char]::IsWhiteSpace($Command[$index - 1]) -or
-                $Command[$index - 1] -in @(';', '&', '|')
-            )) {
-            return $Command.Substring(0, $index)
-        }
-    }
-    return $Command
-}
-function Split-ShellCommands {
-    param([string]$Command)
-
-    $commands = [System.Collections.Generic.List[string]]::new()
-    $current = [System.Text.StringBuilder]::new()
-    $quote = [char]0
-    $escaped = $false
-    for ($index = 0; $index -lt $Command.Length; $index++) {
-        $character = $Command[$index]
-        if ($quote -ne [char]0) {
-            $null = $current.Append($character)
-            if ($escaped) {
-                $escaped = $false
-                continue
-            }
-            if ($character -eq '\') {
-                $escaped = $true
-                continue
-            }
-            if ($character -eq $quote) { $quote = [char]0 }
-            continue
-        }
-
-        if ($character -eq '"' -or $character -eq "'") {
-            $quote = $character
-            $null = $current.Append($character)
-            continue
-        }
-        if ($character -eq ';') {
-            if ($current.ToString().Trim()) { $commands.Add($current.ToString().Trim()) }
-            $null = $current.Clear()
-            continue
-        }
-        if ($character -eq '|' -and $index + 1 -lt $Command.Length -and $Command[$index + 1] -eq '|') {
-            if ($current.ToString().Trim()) { $commands.Add($current.ToString().Trim()) }
-            $null = $current.Clear()
-            $index++
-            continue
-        }
-        if ($character -eq '&' -and $index + 1 -lt $Command.Length -and $Command[$index + 1] -eq '&') {
-            if ($current.ToString().Trim()) { $commands.Add($current.ToString().Trim()) }
-            $null = $current.Clear()
-            $index++
-            continue
-        }
-        $null = $current.Append($character)
-    }
-    if ($current.ToString().Trim()) { $commands.Add($current.ToString().Trim()) }
-    return $commands.ToArray()
-}
-function ConvertTo-ShellTokens {
-    param([string]$Command)
-
-    $tokens = [System.Collections.Generic.List[string]]::new()
-    foreach ($match in [regex]::Matches($Command, '"(?:\\.|[^"])*"|''(?:\\.|[^''])*''|[^\s]+')) {
-        $token = $match.Value
-        if ($token.Length -ge 2 -and (
-                ($token.StartsWith('"') -and $token.EndsWith('"')) -or
-                ($token.StartsWith("'") -and $token.EndsWith("'"))
-            )) {
-            $token = $token.Substring(1, $token.Length - 2)
-        }
-        $tokens.Add($token)
-    }
-    return $tokens.ToArray()
-}
-function Get-DockerfileRunCommands {
-    param([AllowEmptyString()][string]$Text)
-
-    $commands = [System.Collections.Generic.List[string]]::new()
-    $logicalInstruction = [System.Text.StringBuilder]::new()
-    foreach ($line in ((Remove-DockerfileComments -Text $Text) -split "`r?`n")) {
-        $trimmedLine = $line.TrimEnd()
-        $continues = $trimmedLine.EndsWith('\')
-        if ($continues) { $trimmedLine = $trimmedLine.Substring(0, $trimmedLine.Length - 1) }
-        $null = $logicalInstruction.Append($trimmedLine).Append(' ')
-        if ($continues) { continue }
-
-        $instruction = $logicalInstruction.ToString().Trim()
-        $null = $logicalInstruction.Clear()
-        if ($instruction -notmatch '(?is)^\s*RUN\s+(?<command>.+)$') { continue }
-
-        $runCommand = $Matches.command.Trim()
-        if ($runCommand.StartsWith('[')) {
-            try {
-                $execForm = @($runCommand | ConvertFrom-Json -ErrorAction Stop)
-                if ($execForm.Count -gt 0 -and $null -eq ($execForm | Where-Object { $_ -isnot [string] } | Select-Object -First 1)) {
-                    $quotedExecForm = @($execForm | ForEach-Object {
-                            '"{0}"' -f $_.Replace('\', '\\').Replace('"', '\"')
-                        })
-                    $commands.Add(($quotedExecForm -join ' '))
-                    continue
-                }
-            }
-            catch {
-                # A malformed JSON array remains a shell-form command and will
-                # fail the later command-specific checks.
-            }
-        }
-        foreach ($command in (Split-ShellCommands -Command (Remove-ShellComment -Command $runCommand))) {
-            $commands.Add($command)
-        }
-    }
-    return $commands.ToArray()
-}
-function Test-AptInstallPackages {
-    param(
-        [string]$Command,
-        [string[]]$Packages
-    )
-
-    $tokens = @(ConvertTo-ShellTokens -Command $Command)
-    $commandIndex = 0
-    while ($commandIndex -lt $tokens.Count -and $tokens[$commandIndex] -match '^[A-Za-z_][A-Za-z0-9_]*=.*$') {
-        $commandIndex++
-    }
-    if ($commandIndex -ge $tokens.Count -or $tokens[$commandIndex] -notin @('apt-get', 'apt')) {
-        return $false
-    }
-
-    $installIndex = $commandIndex + 1
-    $optionsWithValues = @('-o', '--option', '-c', '--config-file')
-    while ($installIndex -lt $tokens.Count -and $tokens[$installIndex] -match '^-') {
-        if ($tokens[$installIndex] -in $optionsWithValues) {
-            $installIndex += 2
-            continue
-        }
-        $installIndex++
-    }
-    if ($installIndex -ge $tokens.Count -or $tokens[$installIndex] -ne 'install' -or $installIndex + 1 -ge $tokens.Count) {
-        return $false
-    }
-
-    $arguments = @($tokens | Select-Object -Skip ($installIndex + 1))
-    foreach ($package in $Packages) {
-        if ($arguments -notcontains $package) { return $false }
-    }
-    return $true
-}
-function Test-OfficialRepositoryUrlOperand {
-    param(
-        [string[]]$Tokens,
-        [int]$CommandIndex,
-        [string]$RepositoryUrl
-    )
-
-    $optionsWithValues = @(
-        '-o', '--output', '-O', '--output-document',
-        '-H', '--header', '-A', '--user-agent', '-e', '--referer',
-        '-u', '--user', '-d', '--data', '--data-raw', '--data-binary',
-        '--data-urlencode', '-X', '--request', '--connect-timeout',
-        '--retry', '--proxy', '--cacert', '--post-data', '--post-file',
-        '--method', '--timeout'
-    )
-    for ($index = $CommandIndex + 1; $index -lt $Tokens.Count; $index++) {
-        $token = $Tokens[$index]
-        if ($token -eq $RepositoryUrl) { return $true }
-
-        if ($token -eq '--url') {
-            if ($index + 1 -lt $Tokens.Count -and $Tokens[$index + 1] -eq $RepositoryUrl) { return $true }
-            $index++
-            continue
-        }
-        if ($token -eq "--url=$RepositoryUrl") { return $true }
-        if ($token -in $optionsWithValues) {
-            $index++
-            continue
-        }
-        if ($token -match '^--') { continue }
-        if ($token -match '^-(?:o|O|H|A|e|u|d|X).+') { continue }
-    }
-    return $false
-}
-function Test-RepositoryListOutput {
-    param([string[]]$Tokens)
-
-    $isRepositoryListPath = {
-        param([string]$Path)
-        return $Path -match '(?i)(?:sources\.list\.d|mssql-server-2025\.list)'
-    }
-    $optionsWithValues = @('-o', '--output', '-O', '--output-document')
-    for ($index = 0; $index -lt $Tokens.Count; $index++) {
-        $token = $Tokens[$index]
-        if ($token -in $optionsWithValues -and $index + 1 -lt $Tokens.Count) {
-            if (& $isRepositoryListPath $Tokens[$index + 1]) { return $true }
-            $index++
-            continue
-        }
-        if ($token -match '^--(?:output|output-document)=(?<path>.+)$' -and (& $isRepositoryListPath $Matches.path)) {
-            return $true
-        }
-        if ($token -match '^-(?:o|O)(?<path>.+)$' -and (& $isRepositoryListPath $Matches.path)) {
-            return $true
-        }
-        if ($token -eq '>' -and $index + 1 -lt $Tokens.Count -and (& $isRepositoryListPath $Tokens[$index + 1])) {
-            return $true
-        }
-        if ($token -eq 'tee' -and $index + 1 -lt $Tokens.Count -and (& $isRepositoryListPath $Tokens[$index + 1])) {
-            return $true
-        }
-    }
-    return $false
-}
-function Test-OfficialSql2025RepositoryConfiguration {
-    param([string]$Command)
-
-    $repositoryUrl = 'https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list'
-    $tokens = @(ConvertTo-ShellTokens -Command $Command)
-    $commandIndex = 0
-    while ($commandIndex -lt $tokens.Count -and $tokens[$commandIndex] -match '^[A-Za-z_][A-Za-z0-9_]*=.*$') {
-        $commandIndex++
-    }
-    if ($commandIndex -ge $tokens.Count -or $tokens[$commandIndex] -notin @('curl', 'wget')) {
-        return $false
-    }
-    return (Test-OfficialRepositoryUrlOperand -Tokens $tokens -CommandIndex $commandIndex -RepositoryUrl $repositoryUrl) -and
-        (Test-RepositoryListOutput -Tokens $tokens)
-}
-function Test-DockerfileFeaturePackageInstall {
+function Test-CanonicalSql2025DockerRecipe {
     param([AllowEmptyString()][string]$DockerfileText)
 
-    $packages = @('mssql-server-fts', 'mssql-server-polybase')
-    $repositoryConfigured = $false
-    foreach ($command in (Get-DockerfileRunCommands -Text $DockerfileText)) {
-        if (Test-OfficialSql2025RepositoryConfiguration -Command $command) {
-            $repositoryConfigured = $true
-            continue
-        }
-        if ($repositoryConfigured -and (Test-AptInstallPackages -Command $command -Packages $packages)) {
-            return $true
-        }
-    }
-    return $false
+    $source = Normalize-DockerfileSource -Text $DockerfileText
+    $officialListUrl = 'https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list'
+    $listPath = '/etc/apt/sources.list.d/mssql-server-2025.list'
+    $installPattern = '(?m)^[ \t]*RUN[ \t]+apt-get[ \t]+install[ \t]+-y[ \t]+--no-install-recommends[ \t]+mssql-server-fts[ \t]+mssql-server-polybase[ \t]*$'
+
+    if ($source -notmatch '(?m)^[ \t]*FROM[ \t]+mcr\.microsoft\.com/mssql/server:2025-latest[ \t]*$') { return $false }
+    if ($source -notmatch ('(?m)^[ \t]*RUN[ \t]+curl[ \t]+-fsSL[ \t]+' + [regex]::Escape($officialListUrl) + '[ \t]+-o[ \t]+' + [regex]::Escape($listPath) + '[ \t]*$')) { return $false }
+    if ($source -notmatch $installPattern) { return $false }
+    if ($source -notmatch '(?m)^[ \t]*RUN[ \t]+rm[ \t]+-rf[ \t]+/var/lib/apt/lists/\*[ \t]*$') { return $false }
+
+    $rootUser = [regex]::Match($source, '(?m)^[ \t]*USER[ \t]+root[ \t]*$')
+    $install = [regex]::Match($source, $installPattern)
+    $cleanup = [regex]::Match($source, '(?m)^[ \t]*RUN[ \t]+rm[ \t]+-rf[ \t]+/var/lib/apt/lists/\*[ \t]*$')
+    $mssqlUser = [regex]::Match($source, '(?m)^[ \t]*USER[ \t]+mssql[ \t]*$')
+    return $rootUser.Success -and $mssqlUser.Success -and
+        $rootUser.Index -lt $install.Index -and $install.Index -lt $cleanup.Index -and
+        $cleanup.Index -lt $mssqlUser.Index
 }
 
 Write-Host 'SQL Server 2025 module feature coverage (static)'
@@ -477,78 +230,107 @@ foreach ($module in $moduleParity.Keys) {
     }
 }
 
-# Docker remains a documented, reproducible optional asset rather than a test side effect.
+# Docker is a required canonical recipe. A future runtime test will build this
+# image and query its engine/packages; this static test recognizes no alternate
+# Dockerfile or shell syntax.
 $dockerFiles = @(
     'DEMO\docker\Build-DemoImage.ps1',
     'DEMO\docker\README.md',
     'DEMO\docker\README.zh-TW.md'
 )
 foreach ($relative in $dockerFiles) { $null = Get-RequiredText $relative }
-$dockerfile = Get-RequiredText 'DEMO\docker\Dockerfile'
-Assert-Present -Text $dockerfile `
-    -Pattern '(?im)^\s*FROM\s+mcr\.microsoft\.com/mssql/server:2025-latest\s*$' `
-    -Message 'DEMO/docker/Dockerfile must use exactly mcr.microsoft.com/mssql/server:2025-latest.'
+$dockerfilePath = Join-Path $repoRoot 'DEMO\docker\Dockerfile'
+$dockerfile = $null
+if (-not (Test-Path -LiteralPath $dockerfilePath -PathType Leaf)) {
+    Add-Failure 'Docker canonical recipe asset is missing: DEMO/docker/Dockerfile.'
+}
+else {
+    $dockerfile = Get-Content -LiteralPath $dockerfilePath -Raw
+}
 
+$canonicalDockerRecipe = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
+'@
+$continuedCanonicalDockerRecipe = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL \
+    https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list \
+    -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install \
+    -y --no-install-recommends \
+    mssql-server-fts mssql-server-polybase
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
+'@
 $dockerFixtures = @{
-    CommentOnly = @'
-# RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /tmp/mssql.list \
-#     && apt-get install -y mssql-server-fts mssql-server-polybase
-RUN apt-get install -y curl # mssql-server-fts mssql-server-polybase
+    FakeHeaderUrl = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL -H "X-Repository: https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list" https://untrusted.example/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
 '@
-    UnrelatedInstall = @'
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql.list \
-    && apt-get update \
-    && apt-get install -y curl \
-    && echo mssql-server-fts mssql-server-polybase
+    CommentUrl = @'
+# RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://untrusted.example/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
 '@
-    UnconfiguredRepository = @'
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list > /dev/null \
-    && apt-get install -y mssql-server-fts mssql-server-polybase
-'@
-    UntrustedDownloadWithHeader = @'
-RUN curl -fsSL -H "X-Repository: https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list" https://untrusted.example/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql.list \
-    && apt-get install -y mssql-server-fts mssql-server-polybase
-'@
-    UntrustedExecDownloadWithHeader = @'
-RUN ["curl", "-fsSL", "-H", "X-Repository: https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list", "https://untrusted.example/mssql-server-2025.list", "-o", "/etc/apt/sources.list.d/mssql.list"]
-RUN ["apt-get", "install", "mssql-server-fts", "mssql-server-polybase"]
-'@
-    FragmentUrl = @'
-# A URL fragment must remain part of the URL rather than becoming a comment.
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list#fragment -o /etc/apt/sources.list.d/mssql.list \
-    && apt-get update \
-    && apt install -y mssql-server-fts mssql-server-polybase
+    UntrustedUrl = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://untrusted.example/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
 '@
     VersionPinnedPackages = @'
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql.list \
-    && apt-get install mssql-server-fts=17.0.0 mssql-server-polybase=17.0.0
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-fts=17.0.0 mssql-server-polybase=17.0.0
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
 '@
-    Valid = @'
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql.list \
-    && apt-get update \
-    && apt install -y mssql-server-fts mssql-server-polybase
+    MissingPackage = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-fts
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
 '@
-    ValidAptGlobalOption = @'
-RUN wget -q https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -O /etc/apt/sources.list.d/mssql.list \
-    && apt-get -y install mssql-server-fts mssql-server-polybase
-'@
-    ValidExecForm = @'
-RUN ["curl", "-fsSL", "https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list", "-o", "/etc/apt/sources.list.d/mssql.list"]
-RUN ["apt-get", "install", "mssql-server-fts", "mssql-server-polybase"]
+    ReversedPackages = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-polybase mssql-server-fts
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
 '@
 }
-foreach ($name in 'CommentOnly', 'UnrelatedInstall', 'UnconfiguredRepository', 'UntrustedDownloadWithHeader', 'UntrustedExecDownloadWithHeader', 'FragmentUrl', 'VersionPinnedPackages') {
-    if (Test-DockerfileFeaturePackageInstall -DockerfileText $dockerFixtures[$name]) {
-        Add-Failure "Docker parser self-fixture '$name' must reject comments, unrelated packages, non-exact URLs, or version-pinned packages."
+foreach ($recipe in $canonicalDockerRecipe, $continuedCanonicalDockerRecipe) {
+    if (-not (Test-CanonicalSql2025DockerRecipe -DockerfileText $recipe)) {
+        Add-Failure 'Canonical Docker recipe self-fixture must be accepted.'
     }
 }
-foreach ($name in 'Valid', 'ValidAptGlobalOption', 'ValidExecForm') {
-    if (-not (Test-DockerfileFeaturePackageInstall -DockerfileText $dockerFixtures[$name])) {
-        Add-Failure "Docker parser self-fixture '$name' must accept an official repository configuration and exact feature-package install."
+foreach ($name in $dockerFixtures.Keys) {
+    if (Test-CanonicalSql2025DockerRecipe -DockerfileText $dockerFixtures[$name]) {
+        Add-Failure "Canonical Docker recipe self-fixture '$name' must be rejected."
     }
 }
-if ($null -ne $dockerfile -and -not (Test-DockerfileFeaturePackageInstall -DockerfileText $dockerfile)) {
-    Add-Failure 'DEMO/docker/Dockerfile must configure the official Ubuntu 24.04 SQL Server 2025 repository before one apt-get install or apt install argument list contains exact mssql-server-fts and mssql-server-polybase tokens.'
+if ($null -ne $dockerfile -and -not (Test-CanonicalSql2025DockerRecipe -DockerfileText $dockerfile)) {
+    Add-Failure 'DEMO/docker/Dockerfile must use the canonical SQL Server 2025 Docker recipe: exact base image, root-to-mssql user transition, official curl list download, unversioned ordered feature packages, and apt-list cleanup.'
 }
 
 if ($failures.Count -gt 0) {
