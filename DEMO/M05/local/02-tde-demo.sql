@@ -22,8 +22,6 @@ DECLARE @Sql nvarchar(max);
 DECLARE @OwnsDatabase bit = 0;
 DECLARE @OwnsCertificate bit = 0;
 DECLARE @DatabaseId int;
-DECLARE @OwnershipToken nvarchar(36) = CONVERT(nvarchar(36), NEWID());
-DECLARE @OwnershipMarkerPresent bit;
 DECLARE @CertificateThumbprint varbinary(32);
 DECLARE @AppLockResult int;
 DECLARE @AppLockHeld bit = 0;
@@ -55,17 +53,21 @@ BEGIN TRY
     SELECT @CertificateThumbprint = thumbprint
     FROM sys.certificates
     WHERE name = @Certificate;
+    IF @CertificateThumbprint IS NULL
+        THROW 51055, N'Could not record ownership of DP800_M05_TdeDemoCertificate.', 1;
     SET @OwnsCertificate = 1;
 
     SET @Sql = N'CREATE DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
     EXEC (@Sql);
     SET @DatabaseId = DB_ID(@DemoDatabase);
+    IF @DatabaseId IS NULL
+        THROW 51056, N'Could not record ownership of DP800_M05_TdeDemo.', 1;
+    SET @OwnsDatabase = 1;
     SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
                  EXEC sys.sp_addextendedproperty
                      @name = N''DP800_M05_TdeDemoOwnershipToken'',
-                     @value = @OwnershipToken;';
-    EXEC sys.sp_executesql @Sql, N'@OwnershipToken nvarchar(36)', @OwnershipToken = @OwnershipToken;
-    SET @OwnsDatabase = 1;
+                     @value = N''created-by-this-tde-demo'';';
+    EXEC (@Sql);
     SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
                  CREATE DATABASE ENCRYPTION KEY
                  WITH ALGORITHM = AES_256
@@ -85,30 +87,10 @@ BEGIN TRY
 
     IF @OwnsDatabase = 1 AND DB_ID(@DemoDatabase) = @DatabaseId
     BEGIN
-        SET @OwnershipMarkerPresent = 0;
-        SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
-                     SELECT @OwnershipMarkerPresent =
-                         CASE WHEN EXISTS
-                         (
-                             SELECT 1
-                             FROM sys.extended_properties
-                             WHERE class = 0
-                               AND name = N''DP800_M05_TdeDemoOwnershipToken''
-                               AND CONVERT(nvarchar(36), value) = @OwnershipToken
-                         ) THEN 1 ELSE 0 END;';
-        EXEC sys.sp_executesql
-            @Sql,
-            N'@OwnershipToken nvarchar(36), @OwnershipMarkerPresent bit OUTPUT',
-            @OwnershipToken = @OwnershipToken,
-            @OwnershipMarkerPresent = @OwnershipMarkerPresent OUTPUT;
-
-        IF @OwnershipMarkerPresent = 1
-        BEGIN
-            SET @Sql = N'ALTER DATABASE ' + QUOTENAME(@DemoDatabase) + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                         DROP DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
-            EXEC (@Sql);
-            SET @OwnsDatabase = 0;
-        END;
+        SET @Sql = N'ALTER DATABASE ' + QUOTENAME(@DemoDatabase) + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                     DROP DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
+        EXEC (@Sql);
+        SET @OwnsDatabase = 0;
     END;
 
     IF @OwnsDatabase = 1
@@ -137,38 +119,18 @@ BEGIN TRY
     PRINT N'M05 TDE demo verified and cleaned up DP800_M05_TdeDemo.';
 END TRY
 BEGIN CATCH
-    /* Cleanup uses invocation-owned flags, so a failed preflight cannot
-       modify a database or certificate that existed before this run. */
+    /* Ownership is recorded immediately after CREATE statements. The current
+       identity check prevents removal of a pre-existing collision or a
+       replacement resource, including before the marker can be created. */
     IF @OwnsDatabase = 1 AND DB_ID(@DemoDatabase) = @DatabaseId
     BEGIN
-        SET @OwnershipMarkerPresent = 0;
-        SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
-                     SELECT @OwnershipMarkerPresent =
-                         CASE WHEN EXISTS
-                         (
-                             SELECT 1
-                             FROM sys.extended_properties
-                             WHERE class = 0
-                               AND name = N''DP800_M05_TdeDemoOwnershipToken''
-                               AND CONVERT(nvarchar(36), value) = @OwnershipToken
-                         ) THEN 1 ELSE 0 END;';
-        EXEC sys.sp_executesql
-            @Sql,
-            N'@OwnershipToken nvarchar(36), @OwnershipMarkerPresent bit OUTPUT',
-            @OwnershipToken = @OwnershipToken,
-            @OwnershipMarkerPresent = @OwnershipMarkerPresent OUTPUT;
-
-        IF @OwnershipMarkerPresent = 1
-        BEGIN
-            SET @Sql = N'ALTER DATABASE ' + QUOTENAME(@DemoDatabase) + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                         DROP DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
-            EXEC (@Sql);
-            SET @OwnsDatabase = 0;
-        END;
+        SET @Sql = N'ALTER DATABASE ' + QUOTENAME(@DemoDatabase) + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                     DROP DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
+        EXEC (@Sql);
+        SET @OwnsDatabase = 0;
     END;
 
-    IF @OwnsDatabase = 0
-       AND @OwnsCertificate = 1
+    IF @OwnsCertificate = 1
        AND EXISTS
        (
            SELECT 1

@@ -93,6 +93,9 @@ $m05Tde = Join-Path $demoRoot 'M05\local\02-tde-demo.sql'
 $m05Reset = Join-Path $demoRoot 'M05\reset\reset.sql'
 $createdTdeCollisionDatabase = $false
 $createdTdeCollisionCertificate = $false
+$createdTdeMarkerCollision = $false
+$preMarkerDatabaseIdentity = $null
+$preMarkerCertificateThumbprint = $null
 $masterKeyExistedBeforeTde = $false
 $masterKeyIdentityBeforeTde = $null
 $createdTestMasterKey = $false
@@ -212,6 +215,18 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeCerti
 "@) -eq 'YES') {
             Add-Failure 'M05 TDE collision test requires no pre-existing DP800 TDE database or certificate.'
         }
+        elseif ((Get-Scalar -Database 'model' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM sys.extended_properties
+    WHERE class = 0
+      AND name = N'DP800_M05_TdeDemoOwnershipToken'
+) THEN N'YES' ELSE N'NO' END;
+"@) -eq 'YES') {
+            Add-Failure 'M05 TDE pre-marker collision test requires no pre-existing model ownership marker.'
+        }
         else {
             if (-not $masterKeyExistedBeforeTde) {
                 # The production demo must reject an absent key rather than
@@ -299,6 +314,58 @@ DROP DATABASE [$tdeDatabase];
             Invoke-Query -Database 'master' -Query "DROP CERTIFICATE [$tdeCertificate];" | Out-Null
             $createdTdeCollisionCertificate = $false
 
+            # New databases inherit database-level extended properties from
+            # model. The duplicate marker forces sp_addextendedproperty to
+            # fail after CREATE DATABASE but before this demo can write its
+            # own marker.
+            Invoke-Query -Database 'model' -Query @"
+EXEC sys.sp_addextendedproperty
+    @name = N'DP800_M05_TdeDemoOwnershipToken',
+    @value = N'M05 runtime pre-marker collision fixture';
+"@ | Out-Null
+            $createdTdeMarkerCollision = $true
+            $preMarkerFailureOutput = Invoke-SqlScriptExpectFailure -Database 'master' -Path $m05Tde
+            if ($preMarkerFailureOutput -notmatch '15233|already exists') {
+                Add-Failure 'M05 TDE pre-marker collision did not fail after creating the temporary database.'
+            }
+            if ((Get-Scalar -Database 'model' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM sys.extended_properties
+    WHERE class = 0
+      AND name = N'DP800_M05_TdeDemoOwnershipToken'
+      AND CONVERT(nvarchar(128), value) = N'M05 runtime pre-marker collision fixture'
+) THEN N'PASS' ELSE N'FAIL' END;
+"@) -ne 'PASS') {
+                Add-Failure 'M05 TDE pre-marker collision fixture was altered or removed.'
+            }
+            if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeCertificate')
+            THEN N'PASS' ELSE N'FAIL' END;
+"@) -ne 'PASS') {
+                Add-Failure 'M05 TDE pre-marker failure cleanup left a temporary database or certificate behind.'
+            }
+            $preMarkerDatabaseIdentity = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT database_id
+FROM sys.databases
+WHERE name = N'$tdeDatabase';
+"@
+            $preMarkerCertificateThumbprint = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONVERT(varchar(130), thumbprint, 1)
+FROM sys.certificates
+WHERE name = N'$tdeCertificate';
+"@
+            Invoke-Query -Database 'model' -Query @"
+EXEC sys.sp_dropextendedproperty @name = N'DP800_M05_TdeDemoOwnershipToken';
+"@ | Out-Null
+            $createdTdeMarkerCollision = $false
+
             $tdeOutput = Invoke-SqlScript -Database 'master' -Path $m05Tde
             if ($tdeOutput -notmatch '(?s)DP800_M05_TdeDemo.*(?:ENCRYPTION_IN_PROGRESS|ENCRYPTED)') {
                 Add-Failure 'M05 TDE demo did not return an encryption-state verification row.'
@@ -360,6 +427,33 @@ finally {
     # Collision fixtures and the temporary master key are deleted only when
     # this invocation created them.
     try {
+        if ($createdTdeMarkerCollision) {
+            Invoke-Query -Database 'model' -Query @"
+EXEC sys.sp_dropextendedproperty @name = N'DP800_M05_TdeDemoOwnershipToken';
+"@ | Out-Null
+            $createdTdeMarkerCollision = $false
+        }
+        if ($preMarkerDatabaseIdentity -and (Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT database_id
+FROM sys.databases
+WHERE name = N'$tdeDatabase';
+"@) -eq $preMarkerDatabaseIdentity) {
+            Invoke-Query -Database 'master' -Query @"
+ALTER DATABASE [$tdeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+DROP DATABASE [$tdeDatabase];
+"@ | Out-Null
+            $preMarkerDatabaseIdentity = $null
+        }
+        if ($preMarkerCertificateThumbprint -and (Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONVERT(varchar(130), thumbprint, 1)
+FROM sys.certificates
+WHERE name = N'$tdeCertificate';
+"@) -eq $preMarkerCertificateThumbprint) {
+            Invoke-Query -Database 'master' -Query "DROP CERTIFICATE [$tdeCertificate];" | Out-Null
+            $preMarkerCertificateThumbprint = $null
+        }
         if ($createdTdeCollisionDatabase) {
             Invoke-Query -Database 'master' -Query @"
 ALTER DATABASE [$tdeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
