@@ -13,6 +13,9 @@
       * catalog.ProductPrice + catalog.ProductPriceHistory  (system-versioned temporal)
       * sales.PartitionedOrders + partition scheme/function (range partitioning)
       * catalog.Products.MetadataFrame + IX_Products_MetadataFrame (computed column/index)
+      * catalog.ProductJsonTeaching + IX_Products_ProductMetadata (native json)
+      * In-Memory cache table, updatable ledger, sequence, constraints, and
+        feature-detected external metadata
 
     Dependency/staleness reset: every module depends (transitively) on M01, so a
     M01 reset marks M02..M11 stale (NotStarted) as well, clearing their timestamps
@@ -77,6 +80,37 @@ IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'catalog.Produ
     DROP INDEX IX_Products_MetadataFrame ON catalog.Products;
 IF COL_LENGTH(N'catalog.Products', N'MetadataFrame') IS NOT NULL
     ALTER TABLE catalog.Products DROP COLUMN MetadataFrame;
+
+/* JSON index and teaching table are M01-owned; catalog.Products itself remains
+   canonical. Do not remove M01MemoryOptimized: dropping an XTP filegroup/file
+   has been observed to hang containerized SQL Server instances.
+*/
+IF EXISTS (SELECT 1 FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.Products') AND name = N'IX_Products_ProductMetadata')
+    DROP INDEX IX_Products_ProductMetadata ON catalog.Products;
+DROP TABLE IF EXISTS catalog.ProductJsonTeaching;
+
+DROP TABLE IF EXISTS catalog.ProductCacheInMemory;
+
+/* Dropping an updatable ledger can retain an engine-managed dropped-ledger
+   system table for verification. It is intentional and must not be removed.
+*/
+IF OBJECT_ID(N'ops.InventoryLedger', N'U') IS NOT NULL
+    DROP TABLE ops.InventoryLedger;
+
+DROP TABLE IF EXISTS catalog.ProductSkuSequenceDemo;
+IF OBJECT_ID(N'catalog.ProductSkuSequence', N'SO') IS NOT NULL
+    DROP SEQUENCE catalog.ProductSkuSequence;
+
+DROP TABLE IF EXISTS catalog.ProductConstraintViolationLog;
+DROP TABLE IF EXISTS catalog.ProductConstraintChild;
+DROP TABLE IF EXISTS catalog.ProductConstraintParent;
+
+IF EXISTS (SELECT 1 FROM sys.external_tables WHERE object_id = OBJECT_ID(N'catalog.ProductMetadataExternal'))
+    DROP EXTERNAL TABLE catalog.ProductMetadataExternal;
+IF EXISTS (SELECT 1 FROM sys.external_file_formats WHERE name = N'M01ProductMetadataFileFormat')
+    DROP EXTERNAL FILE FORMAT M01ProductMetadataFileFormat;
+IF EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = N'M01ProductMetadataSource')
+    DROP EXTERNAL DATA SOURCE M01ProductMetadataSource;
 GO
 
 /* ---------------------------------------------------------------------------

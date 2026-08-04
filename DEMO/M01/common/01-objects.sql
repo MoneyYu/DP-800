@@ -9,6 +9,8 @@
     Objects provisioned here:
       * catalog.ProductPrice + catalog.ProductPriceHistory  (system-versioned temporal)
       * catalog.Products.MetadataFrame                       (computed JSON projection + index)
+      * catalog.Products.ProductMetadata                     (native json predicates + JSON index)
+      * catalog.ProductJsonTeaching                          (safe native json .modify() exercise)
       * sales.PartitionedOrders                              (range-partitioned teaching object)
       * catalog.ProductNode / catalog.ProductRelatedTo       (SQL graph node/edge)
 
@@ -52,6 +54,10 @@ IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'catalog.Produ
     DROP INDEX IX_Products_MetadataFrame ON catalog.Products;
 IF COL_LENGTH(N'catalog.Products', N'MetadataFrame') IS NOT NULL
     ALTER TABLE catalog.Products DROP COLUMN MetadataFrame;
+
+IF EXISTS (SELECT 1 FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.Products') AND name = N'IX_Products_ProductMetadata')
+    DROP INDEX IX_Products_ProductMetadata ON catalog.Products;
+DROP TABLE IF EXISTS catalog.ProductJsonTeaching;
 GO
 
 /* ---------------------------------------------------------------------------
@@ -98,6 +104,50 @@ GO
 
 CREATE INDEX IX_Products_MetadataFrame
 ON catalog.Products(MetadataFrame);
+GO
+
+/* Native json predicates operate on the canonical json column. The JSON index
+   below is supported because ProductMetadata is native json and PK_Products is
+   the table's clustered primary key. The SET options at the top of this script
+   are required for deterministic indexed-object creation.
+   * 原生 json 述詞直接操作標準 ProductMetadata；JSON 索引使用原生 json 欄位與
+     clustered PK。指令碼開頭的 SET 選項確保建立索引物件時的設定正確。
+*/
+SELECT ProductID,
+       ProductName,
+       JSON_VALUE(ProductMetadata, '$.frame') AS FrameMaterial,
+       JSON_PATH_EXISTS(ProductMetadata, '$.frame') AS HasFrame,
+       JSON_CONTAINS(ProductMetadata, N'"aluminum"', '$.frame') AS IsAluminumFrame
+FROM catalog.Products
+WHERE ProductID = 1;
+GO
+
+CREATE JSON INDEX IX_Products_ProductMetadata
+ON catalog.Products(ProductMetadata)
+WITH (OPTIMIZE_FOR_ARRAY_SEARCH = ON);
+GO
+
+/* The .modify() method changes only a module-owned teaching row, so
+   catalog.Products remains canonical. Reset drops this teaching table.
+   * .modify() 只變更模組擁有的教學資料列；標準產品資料保持不變，reset 會移除此表。
+*/
+CREATE TABLE catalog.ProductJsonTeaching
+(
+    ProductJsonTeachingID int NOT NULL
+        CONSTRAINT PK_ProductJsonTeaching PRIMARY KEY CLUSTERED,
+    Payload json NOT NULL
+);
+
+INSERT catalog.ProductJsonTeaching (ProductJsonTeachingID, Payload)
+VALUES (1, N'{"lesson":"M01-safe-original","topic":"native json"}');
+
+UPDATE catalog.ProductJsonTeaching
+SET Payload.modify('$.lesson', N'M01-safe-modified')
+WHERE ProductJsonTeachingID = 1;
+
+SELECT JSON_VALUE(Payload, '$.lesson') AS ModifiedLesson
+FROM catalog.ProductJsonTeaching
+WHERE ProductJsonTeachingID = 1;
 GO
 
 /* ---------------------------------------------------------------------------
