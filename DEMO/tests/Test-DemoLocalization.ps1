@@ -14,8 +14,9 @@ function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
 function Test-ExplicitDatabaseSafety {
     param([string]$Command)
 
-    $databaseParameters = [regex]::Matches($Command, '(?i)(?<!\S)-Database(?=[:\s]|$)')
-    $validDatabaseTarget = '(?i)\A-Database(?::(?:AdventureGearAI|''AdventureGearAI''|"AdventureGearAI")(?=\s|$)|\s+(?:AdventureGearAI|''AdventureGearAI''|"AdventureGearAI")(?=\s|$))'
+    $databaseParameterName = '(?i:Database|Databas|Databa|Datab|Data|Dat|Da|D)'
+    $databaseParameters = [regex]::Matches($Command, "(?<!\S)-$databaseParameterName(?=[:\s]|$)")
+    $validDatabaseTarget = "\A-$databaseParameterName(?::(?:AdventureGearAI|'AdventureGearAI'|`"AdventureGearAI`")(?=\s|`$)|\s+(?:AdventureGearAI|'AdventureGearAI'|`"AdventureGearAI`")(?=\s|`$))"
     foreach ($databaseParameter in $databaseParameters) {
         if (-not [regex]::IsMatch($Command.Substring($databaseParameter.Index), $validDatabaseTarget)) {
             return $false
@@ -156,6 +157,9 @@ foreach ($fixture in @(
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAIFoo'; Expected = $false; Name = 'unquoted token suffix target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database $database'; Expected = $false; Name = 'variable database target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database $(Get-Database)'; Expected = $false; Name = 'expression database target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -D master'; Expected = $false; Name = 'database single-letter abbreviation master target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Dat master'; Expected = $false; Name = 'database partial abbreviation master target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database adventuregearai'; Expected = $false; Name = 'lowercase AdventureGearAI target' }
     )) {
     if ((Test-ExplicitDatabaseSafety -Command $fixture.Command) -ne $fixture.Expected) {
         Add-Failure "Database safety fixture failed for $($fixture.Name)."
@@ -207,7 +211,8 @@ function Get-RunnablePowerShellCommands {
     param([string]$Text)
 
     $commands = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    foreach ($line in ($Text -split "`r?`n")) {
+    $normalizedText = $Text -replace '[ \t]*`\r?\n[ \t]*', ' '
+    foreach ($line in ($normalizedText -split "`r?`n")) {
         $command = $line.Trim()
         if ($command -match '(?i)^pwsh -NoProfile -File\s+') {
             [void]$commands.Add($command)
@@ -232,6 +237,26 @@ if (@(Get-RunnablePowerShellCommands -Text @'
 ```
 '@).Count -ne 0) {
     Add-Failure 'Command extraction fixture incorrectly treats a commented code-block command as runnable.'
+}
+$masterContinuationCommands = @(Get-RunnablePowerShellCommands -Text @'
+pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 `
+    -InputFile DEMO/M01/01-Create-Database.sql `
+    -Database master
+'@)
+if ($masterContinuationCommands.Count -ne 1 -or
+    (Test-ExplicitDatabaseSafety -Command $masterContinuationCommands[0])) {
+    Add-Failure 'Command extraction fixture does not reject a master target on a backtick continuation.'
+}
+$validContinuationCommands = @(Get-RunnablePowerShellCommands -Text @'
+pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 `
+    -InputFile DEMO/M01/01-Create-Database.sql `
+    -Database AdventureGearAI
+'@)
+$expectedValidContinuationCommand = 'pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -InputFile DEMO/M01/01-Create-Database.sql -Database AdventureGearAI'
+if ($validContinuationCommands.Count -ne 1 -or
+    $validContinuationCommands[0] -cne $expectedValidContinuationCommand -or
+    -not (Test-ExplicitDatabaseSafety -Command $validContinuationCommands[0])) {
+    Add-Failure 'Command extraction fixture does not deterministically normalize a valid backtick continuation.'
 }
 
 function Test-ByteArraysEqual {
