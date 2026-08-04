@@ -1,4 +1,4 @@
-name: Build and deploy DP-800 SQL project
+name: Build and deploy AdventureGearAI SQL project
 
 on:
   workflow_dispatch:

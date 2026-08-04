@@ -67,7 +67,9 @@ tags: DP-800, Trainer, Teaching
 - [ ] 確認既有 Docker container `mssql2025` 已由外部流程啟動；repo 不負責建立、啟停或刪除 container。
 - [ ] 安裝 PowerShell 7 與 `sqlcmd`。
 - [ ] 密碼只從 `DP800_SQL_PASSWORD`、`SQLCMDPASSWORD` 或 secure prompt 取得；不得放入 script、argument、`.env`、文件、截圖或 Git。
-- [ ] 執行 `pwsh DEMO/bootstrap/Invoke-Bootstrap.ps1`，確認只建立 `DP800_M01`–`DP800_M11`。
+- [ ] 執行 `pwsh DEMO/bootstrap/Invoke-Bootstrap.ps1`，確認只建立**單一** `AdventureGearAI` 資料庫（含 `catalog`／`sales`／`customer`／`security`／`ops`／`api`／`search`／`ai` schema、`ops.DemoEnvironment` marker、`ops.DemoModuleState` 與 canonical AdventureGear ecommerce seed）。
+- [ ] 確認 bootstrap 不建立 per-module 資料庫；任何殘留的 legacy `DP800_Mxx` 只會被列為 manual cleanup candidate，永不自動刪除（never automatically deleted）。
+- [ ] 需要時以 hybrid runner 跑 module：`pwsh DEMO/scripts/Invoke-DemoModule.ps1 -Modules <n>`（或 `Invoke-Bootstrap.ps1 -Modules <n>`）；不加 `-Modules` 則 core-only。
 - [ ] 已完成的本機實測結果應直接講清楚：
   - regular expression、`vector` type／exact vector、`sys.external_models` catalog 與 `sp_invoke_external_rest_endpoint` catalog/procedure surface 可偵測或支援；
   -目前 image **沒有安裝 Full-Text Search**；
@@ -98,6 +100,8 @@ tags: DP-800, Trainer, Teaching
 ## 3. 建議三天議程
 
 原則：每天約 6.5 小時教學活動，保留固定休息與 30–45 分鐘 buffer。11 個 Lab 不宜全部逐步帶做；可依班級速度，把部分改成 instructor walkthrough 或課後完成。
+
+**單一資料庫、三天演進的節奏**：三天都在同一個 `AdventureGearAI` 資料庫上授課，不是 11 個彼此獨立的 `DP800_Mxx`。Day 1 建立 schema、programmability 與 advanced T-SQL；Day 2 疊上 security、performance、CI/CD 與 API；Day 3 讓同一批 products／customers／reviews 進入 embedding、search 與 RAG。hybrid runner 依賴圖自動補齊 prerequisite（cumulative M01 → M11），因此可以「請哪個 module 就自動先跑它需要的 module」，而 canonical core 只建立一次。請以「同一個資料庫逐步長出能力」的故事線串連每個 module，而非每組重新建庫。
 
 ### Day 1 — LP1：Design and develop
 
@@ -223,6 +227,8 @@ WITH (METRIC = 'cosine', TYPE = 'DISKANN');
 
 ## 5. 逐模組備課指南
 
+以下每個 module 都在同一個 `AdventureGearAI` 資料庫上進行，透過 dependency-aware hybrid runner（`DEMO/scripts/Invoke-DemoModule.ps1`）執行；runner 會先確保 core bootstrap 存在、依賴圖自動補齊 prerequisite，再對 `AdventureGearAI` 跑該 module 的 `common` + `local` setup，並在 `ops.DemoModuleState` 記錄狀態。已 `Completed` 的 module 會被跳過，加 `-Force` 可重跑。所有「重來」都採 module-scoped reset（只移除該 module objects、保留 canonical core），full reset 才會 drop 單一 `AdventureGearAI`；兩者都不碰 legacy `DP800_Mxx`（僅 manual cleanup candidate，永不自動刪除）。
+
 ## M01 — Design and implement database objects with SQL
 
 **學習目標**
@@ -244,9 +250,8 @@ WITH (METRIC = 'cosine', TYPE = 'DISKANN');
 
 **DEMO 建議順序**
 
-1. `DEMO/M01/common/01-objects.sql`
-2. `DEMO/M01/local/01-inspect.sql`
-3. 需要重來：從 `master` 執行 `DEMO/M01/reset/reset.sql`，再 bootstrap M01。
+1. 以 hybrid runner 對單一 `AdventureGearAI` 執行：`pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 1`。runner 先確保 core，再依序跑 `common/01-objects.sql` → `local/01-inspect.sql`；已 Completed 時加 `-Force` 重跑。
+2. 需要重來（module-scoped reset，不 drop database）：對 `AdventureGearAI` 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M01/reset/reset.sql`，只移除 M01 objects 並把 M01–M11 標記 NotStarted，canonical core 保留；再重跑 runner。
 
 展示 temporal `SYSTEM_TIME`、JSON/index、partition、graph node／edge。Azure SQL core syntax 相近，但 filegroup／storage choice 與 boxed SQL Server 不同。
 
@@ -269,7 +274,7 @@ WITH (METRIC = 'cosine', TYPE = 'DISKANN');
 
 - 「有 index 就一定快？」否；要符合 predicate、join、sort 與 selectivity。
 - Temporal history 不是無限免費；需 retention／storage strategy。
-- Reset 只能針對 `DP800_M01`，不要改成 wildcard drop。
+- Module-scoped reset 只移除 M01 objects 並保留 canonical core；不改成 wildcard drop，也不碰 legacy `DP800_Mxx`（僅 manual cleanup candidate，永不自動刪除）。
 
 **轉場**
 
@@ -297,9 +302,8 @@ Objects 定義資料形狀；M02 將 reusable behavior 與 access boundary 放�
 
 **DEMO 建議順序**
 
-1. `DEMO/M02/common/01-programmability.sql`
-2. `DEMO/M02/local/01-exercise.sql`
-3. `DEMO/M02/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 2`。runner 確保 core（及需要時的 M01 prerequisite），再跑 `common/01-programmability.sql` → `local/01-exercise.sql`；加 `-Force` 重跑。local exercise 以可 rollback 的 transaction 包住，canonical sales 資料不變。
+2. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M02/reset/reset.sql`（只移除 M02 objects，canonical core 保留）。
 
 `01-programmability.sql` 建立 view、stored procedure、scalar function、inline TVF 與 `AFTER UPDATE` audit trigger。講解 multi-statement TVF／`INSTEAD OF` trigger 時回到 PPT syntax 與選型比較，不將其列為 runtime 驗證結果。Local 與 Azure SQL 的 core objects 大致相同；授課時強調 permission／deployment context 仍可能不同。
 
@@ -322,7 +326,7 @@ Objects 定義資料形狀；M02 將 reusable behavior 與 access boundary 放�
 
 - Trigger 必須處理 multi-row `inserted`／`deleted`，不能假設一次一列。
 - Multi-statement TVF 可能造成 cardinality／optimization 問題。
-- Demo 重跑前確認 setup 的 idempotent behavior，必要時 reset 該 module database。
+- Demo 重跑前確認 setup 的 idempotent behavior；必要時對 `AdventureGearAI` 執行該 module 的 scoped reset，不 drop database。
 
 **轉場**
 
@@ -350,9 +354,8 @@ Objects 定義資料形狀；M02 將 reusable behavior 與 access boundary 放�
 
 **DEMO 建議順序**
 
-1. `DEMO/M03/common/01-advanced-objects.sql`
-2. `DEMO/M03/local/01-advanced-queries.sql`
-3. `DEMO/M03/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 3`。runner 確保 core（及需要時的 M01 prerequisite），再跑 `common/01-advanced-objects.sql` → `local/01-advanced-queries.sql`；加 `-Force` 重跑。
+2. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M03/reset/reset.sql`（只移除 M03 objects，canonical core 保留）。
 
 本機已完成 regex feature detection；仍讓 script 報告實際 engine 結果，不硬編版本結論。
 
@@ -403,11 +406,9 @@ M03 展示人寫的 advanced SQL；M04 討論 AI 如何協助產生／解釋，�
 
 **DEMO 建議順序**
 
-1. `DEMO/M04/common/copilot-instructions-example.md`
-2. `DEMO/M04/local/01-review-target.sql`
-3. 以 approved Copilot tool explain／review／refactor。
-4. 對照 `DEMO/M04/local/02-reference-improvement.sql`
-5. `DEMO/M04/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 4`。runner 對 `AdventureGearAI` 跑兩支 read-only 的 `local/01-review-target.sql` 與 `local/02-reference-improvement.sql`（idempotent，資料不變）。
+2. 以 `DEMO/M04/common/copilot-instructions-example.md` 為可審查 instruction，透過 approved Copilot tool explain／review／refactor，再對照 `local/02-reference-improvement.sql`。
+3. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M04/reset/reset.sql`。
 
 Local 可做 offline review exercise；official Lab 需要 Azure SQL Database。Fabric Copilot 是 cloud-only supported experience。
 
@@ -458,9 +459,8 @@ AI-assisted development 放大生產力，也放大風險；M05 進入資料與 
 
 **DEMO 建議順序**
 
-1. `DEMO/M05/common/01-security.sql`
-2. `DEMO/M05/local/01-verify-security.sql`
-3. `DEMO/M05/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 5`。runner 對 `AdventureGearAI` 跑 `common/01-security.sql` → `local/01-verify-security.sql`；demo users 每次 drop/recreate，加 `-Force` 安全。
+2. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M05/reset/reset.sql`（只移除 `security` schema 的 module objects，canonical `customer.Customers` 保留）。
 
 Local 執行 DDM／RLS；TDE 僅檢視，不以 hardcoded master-key password 自動化；Always Encrypted 需 configured client driver。Entra／Log Analytics auditing 為 Azure path。
 
@@ -512,11 +512,11 @@ Local 執行 DDM／RLS；TDE 僅檢視，不以 hardcoded master-key password �
 
 **DEMO 建議順序**
 
-1. `DEMO/M06/common/01-workload.sql`
-2. `DEMO/M06/local/01-plans-query-store-dmvs.sql`
-3. Blocking：三個獨立 session，依序準備 `02-blocker.sql`、`03-blocked.sql`、`04-observe-blocking.sql`。
-4. Deadlock：兩個獨立 session，協調同時執行 `05-deadlock-session-a.sql`、`06-deadlock-session-b.sql`。
-5. `DEMO/M06/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 6`。runner 對 `AdventureGearAI` 跑 `common/01-workload.sql` → `local/01-plans-query-store-dmvs.sql`。
+2. Blocking／deadlock 為互動式、需多個同時 session，故意排除於 runner manifest 之外；手動對 `AdventureGearAI` 執行：
+   - Blocking：三個獨立 session，依序準備 `local/02-blocker.sql`、`local/03-blocked.sql`、`local/04-observe-blocking.sql`。
+   - Deadlock：兩個獨立 session，協調同時執行 `local/05-deadlock-session-a.sql`、`local/06-deadlock-session-b.sql`。
+3. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M06/reset/reset.sql`。
 
 **Query Store regression／plan forcing walkthrough**
 
@@ -554,7 +554,7 @@ EXEC sys.sp_query_store_unforce_plan
 
 - Blocking／deadlock scripts 故意互相等待，不能 unattended sequential run。
 - 開始前指定 session A／B／observer，先說明預期誰會 block／victim。
-- 結束後 rollback／關閉 transaction；若狀態不明，reset 只處理 `DP800_M06`。
+- 結束後 rollback／關閉 transaction；若狀態不明，對 `AdventureGearAI` 執行 M06 scoped reset（只移除 M06 objects），不 drop database。
 
 **Official Lab**
 
@@ -603,12 +603,10 @@ EXEC sys.sp_query_store_unforce_plan
 
 **DEMO 建議順序**
 
-1. 檢視 `DEMO/M07/common/Dp800.Database/`
-2. 執行 `DEMO/M07/local/Build-SqlProject.ps1`
-3. 檢視產生的 `.dacpac` 與 object-per-file diff。
-4. 說明 `DEMO/M07/common/Dp800.Database/DP800.publish.xml`
-5. Walkthrough `DEMO/M07/azure/build-deploy.yml`
-6. `DEMO/M07/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 7`。runner 對 `AdventureGearAI` 跑 idempotent 的 `common/01-inventory-deployment-log.sql`（建立 `catalog.InventoryChangeLog`、`catalog.usp_LogInventoryChange`、`ops.DeploymentLog`）。
+2. SQL project **build** 另行示範：執行 `DEMO/M07/local/Build-SqlProject.ps1` 產生針對 `AdventureGearAI` 的 `.dacpac`，檢視 object-per-file diff（0 warnings／0 errors）。
+3. 說明 passwordless Entra **publish** profile `DEMO/M07/common/Dp800.Database/DP800.publish.xml`（scoped 到 `AdventureGearAI`）與 sample workflow `DEMO/M07/azure/build-deploy.yml`（僅引用 secrets／OIDC，不含 secret value）。
+4. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M07/reset/reset.sql`。
 
 Local 可 build／選擇性 publish；Azure workflow 僅引用 secrets／OIDC，不含 secret value。
 
@@ -676,13 +674,11 @@ CI/CD 解決 database delivery；M08 將 database 安全地暴露給 application
 
 **DEMO 建議順序**
 
-1. `DEMO/M08/common/01-product-api.sql`
-2. `DEMO/M08/common/dab-config.json`
-3. 依 `DEMO/M08/local/README.md` 設定 `DATABASE_CONNECTION_STRING`
-4. 若已安裝 DAB CLI：`dab start --config DEMO/M08/common/dab-config.json`
-5. 若 CLI 仍 absent：只做 config walkthrough，改由 official Lab 操作。
-6. Azure differences：`DEMO/M08/azure/README.md`
-7. `DEMO/M08/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 8`。runner 對 `AdventureGearAI` 跑 `common/01-product-api.sql`，建立 read-only `api.Categories`／`api.Products`／`api.ProductCatalog`／`api.InventoryAvailability` views。
+2. 檢視 `DEMO/M08/common/dab-config.json`；依 `DEMO/M08/local/README.md` 由 `DATABASE_CONNECTION_STRING` 環境變數注入連線字串。
+3. 若已安裝 DAB CLI：`dab start --config DEMO/M08/common/dab-config.json`；若 CLI 仍 absent：只做 config walkthrough，改由 official Lab 操作。
+4. Azure hosting differences：`DEMO/M08/azure/README.md`（managed identity）。
+5. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M08/reset/reset.sql`。
 
 Local 使用 SQL authentication 僅為 trainer convenience；Azure hosting 應使用 Entra／managed identity。
 
@@ -734,12 +730,10 @@ M08 讓 application 使用資料；M09 開始讓 database 使用 model endpoint 
 
 **DEMO 建議順序**
 
-1. `DEMO/M09/common/01-review-data.sql`
-2. `DEMO/M09/local/01-feature-detection.sql`
-3. 解讀已驗證結果：`vector` 與 external-model catalog 可用；沒有 approved endpoint／credential 時 embedding generation 正確地 skip。
-4. Walkthrough `DEMO/M09/azure/01-external-model.sql`
-5. 完整 backup implementation：`TERRAFORM/sample-data/ecommerce-ai.sql`
-6. `DEMO/M09/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 9`。runner 依賴圖先確保 M01，再對 `AdventureGearAI` 跑 `common/01-review-data.sql`（由 `customer.ProductReviews` join `catalog.Products` 建 `ai.EmbeddingDocuments`）→ `local/01-feature-detection.sql`。
+2. 解讀已驗證結果：`vector` 與 external-model catalog 可用；沒有 approved endpoint／credential 時 **external model／embedding generation** 正確地 skip。
+3. Walkthrough Azure managed-identity template `DEMO/M09/azure/01-external-model.sql`（`AdventureGearEmbeddingModel`）；完整 backup implementation 見 `TERRAFORM/sample-data/ecommerce-ai.sql`。SQLCMD variables 必須 runtime supplied，檔案不得放 key／token。
+4. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M09/reset/reset.sql`。
 
 Azure template 的 SQLCMD variables 必須 runtime supplied；credential 另以 managed identity 建立，檔案不得放 API key。
 
@@ -801,15 +795,14 @@ M09 已將語意轉為向量；M10 比較如何以 keyword、exact vector、ANN 
 
 **DEMO 建議順序**
 
-1. `DEMO/M10/common/01-search-data.sql`
-2. `DEMO/M10/local/01-search.sql`
-3. 解讀本機結果：
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 10`。runner 依賴圖 resolve M01 → M09 → M10，再對 `AdventureGearAI` 跑 `common/01-search-data.sql`（由 reviews join products 建 `search.SearchDocuments`，展開成 100+ vectorized documents）→ `local/01-search.sql`。
+2. 解讀本機結果：
    - Full-Text 因 image 未安裝而 skip；
    - exact `VECTOR_DISTANCE` 可執行；
-   - 舊 `ALLOW_STALE_VECTOR_INDEX`／ANN configuration 不支援，ANN truthful skip；
+   - 本機缺 **vector index** surface／舊 ANN configuration 不支援時，ANN truthful skip；
    - hybrid 因 Full-Text 不可用而 skip。
-4. 對照 Azure current syntax：`DEMO/M10/azure/01-ann-search.sql` 僅是 guarded template；實際 AI stack current query 見 `TERRAFORM/sample-data/ecommerce-ai.sql`。
-5. `DEMO/M10/reset/reset.sql`
+3. 對照 Azure current syntax：`DEMO/M10/azure/01-ann-search.sql` 僅是 guarded template；實際 AI stack current query 見 `TERRAFORM/sample-data/ecommerce-ai.sql`。
+4. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M10/reset/reset.sql`。
 
 授課時明確指出：舊 local script 的 `TOP_N` syntax 是 compatibility probe；最新 Azure SQL path 使用 `SELECT TOP (...) WITH APPROXIMATE` 並省略 `TOP_N`。
 
@@ -862,12 +855,10 @@ M10 解決 retrieval；M11 把 retrieved context 放進 prompt，並可靠地處
 
 **DEMO 建議順序**
 
-1. `DEMO/M11/common/01-local-rag.sql`
-2. `DEMO/M11/local/01-build-prompt.sql`
-3. 說明 local 已偵測 REST procedure surface，但沒有 approved endpoint／credential 時只建 context／prompt，不做 generation。
-4. Walkthrough `DEMO/M11/azure/01-rag-procedure.sql`
-5. 完整 error-handling implementation：`TERRAFORM/sample-data/ecommerce-ai.sql`
-6. `DEMO/M11/reset/reset.sql`
+1. 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 11`。runner 依賴圖 resolve M01 → M09 → M10 → M11，`search.SearchDocuments` 先備妥；再對 `AdventureGearAI` 跑 `common/01-local-rag.sql`（建 `ai.usp_BuildRagPrompt`）→ `local/01-build-prompt.sql`。
+2. 說明 local 已偵測 REST procedure surface，但沒有 approved endpoint／credential 時只建 context／prompt，不做 generation。
+3. Walkthrough Azure managed-identity **REST** pattern `DEMO/M11/azure/01-rag-procedure.sql`（`ai.usp_AskProductQuestion`）；完整 error-handling implementation 見 `TERRAFORM/sample-data/ecommerce-ai.sql`。
+4. 需要重來：對 `AdventureGearAI` 執行 module-scoped reset `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M11/reset/reset.sql`。
 
 Azure path 應檢查 return value、HTTP description、JSON response path 與 empty answer；managed identity／RBAC failure 不可被包成空字串。
 
@@ -913,14 +904,15 @@ Azure SQL Database 預設啟用；所有平台仍需 database-level `EXECUTE ANY
 
 ### 6.1 Reset 邊界
 
-- Bootstrap 只建立 `DP800_M01`–`DP800_M11`。
-- 每個 module 的 `reset/reset.sql` 只可 drop 對應的 `DP800_` module database。
-- Reset 從 `master` 執行；之後重新 bootstrap 指定 module，再按 `common/`、`local/` filename order 執行。
-- 不修改 script 讓它處理非 `DP800_` database，不使用 wildcard drop。
+- Bootstrap 只建立**單一** `AdventureGearAI` 資料庫（含 8 個 domain schema、`ops.DemoEnvironment` marker、`ops.DemoModuleState` 與 canonical seed）；不建立 per-module 資料庫。
+- 每個 module 的 `reset/reset.sql` 是 module-scoped reset：只移除該 module 擁有的 objects、把該 module 與其 dependents 標記 NotStarted，canonical `catalog`／`sales`／`customer` core 保留；它**永不 drop database**。
+- 只有 `DEMO/reset/reset-adventuregear.sql`（由 `DEMO/reset/Reset-AdventureGearAI.ps1` 呼叫）可 drop database，且 hard-scoped 到 literal `AdventureGearAI`，drop 後自動重跑 core bootstrap。
+- Module-scoped reset 與所有 module 執行都對 `AdventureGearAI`（透過 `DEMO/scripts/Invoke-Dp800Sql.ps1` 的 read-only database guard）執行，不從 per-module 資料庫執行。
+- 不修改 script 讓它處理 `AdventureGearAI` 以外的 database、不使用 wildcard drop、不碰 legacy `DP800_Mxx`（僅 manual cleanup candidate，永不自動刪除）。
 
 ### 6.2 Idempotency
 
-- Demo 前至少完整跑一次 setup → local → reset → bootstrap → rerun。
+- Demo 前至少完整跑一次：core bootstrap → runner 執行 module → module-scoped reset → 重跑 runner，確認狀態回到乾淨基線。
 - 若 object 已存在，應由 script 的 guarded／drop-create logic 處理；不要現場手動刪除不相關 object。
 - Azure data-plane rerun 使用 repo 已設計的 Terraform replacement／script flow，不以 portal 零散修補後假裝 desired state 一致。
 
@@ -936,7 +928,7 @@ Azure SQL Database 預設啟用；所有平台仍需 database-level `EXECUTE ANY
 - Blocking demo 前先保留 observer session；若卡住，先辨識 session／transaction，再 rollback 指定 session。
 - Deadlock 由 engine 選 victim；捕捉錯誤後確認另一 session transaction 已完成／rollback。
 - 不用 name-based process kill；不要因 demo 卡住而重啟整個共享 SQL container。
-- 最後才 reset `DP800_M06`，不碰其他 module database。
+- 最後才對 `AdventureGearAI` 執行 M06 scoped reset（只移除 M06 objects），不 drop database、不碰其他 module 的 objects。
 
 ---
 
@@ -962,7 +954,7 @@ Azure SQL Database 預設啟用；所有平台仍需 database-level `EXECUTE ANY
 
 - [ ] 確認學員已儲存必要 Lab notes，不保存 secret。
 - [ ] 停止 local DAB／臨時 process；repo 不停止或刪除外部 `mssql2025` container。
-- [ ] 視需要 reset `DP800_M01`–`DP800_M11`；不得刪除其他 database。
+- [ ] 視需要對 `AdventureGearAI` 執行 module-scoped reset，或以 `DEMO/reset/Reset-AdventureGearAI.ps1` 做 full reset；只有這一個資料庫，legacy `DP800_Mxx` 僅為 manual cleanup candidate（永不自動刪除），不由本課流程刪除。
 - [ ] 撤除臨時 environment variables、token、connection string。
 - [ ] 刪除受保護的 saved Terraform plan。
 - [ ] 清點 Azure resource groups、model deployments、SQL、MI、VM、disks、public IP、PostgreSQL、Key Vault、Automation、Database Watcher。

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0.0",
+  "description": "Setup ownership manifest for the AdventureGearAI unified demo module runner. Each module lists the setup scripts that the runner is allowed to execute, grouped by scope (common, local, azure). Script paths are resolved relative to this manifest file's directory. A module is only executed when 'ready' is true; until a module's demos are migrated to AdventureGearAI domain schemas, 'ready' remains false so the runner refuses to run legacy per-database scripts against AdventureGearAI. The runner executes common+local setup for local runs and never executes azure scripts locally. Interactive M06 blocker/deadlock/observer scripts are intentionally excluded from the local setup list.",
+  "scopePolicy": {
+    "local": ["common", "local"],
+    "azureExcludedFromLocal": true
+  },
+  "modules": [
+    { "module": 1,  "ready": true,  "setup": { "common": ["../M01/common/01-objects.sql"], "local": ["../M01/local/01-inspect.sql"], "azure": [] } },
+    { "module": 2,  "ready": true,  "setup": { "common": ["../M02/common/01-programmability.sql"], "local": ["../M02/local/01-exercise.sql"], "azure": [] } },
+    { "module": 3,  "ready": true,  "setup": { "common": ["../M03/common/01-advanced-objects.sql"], "local": ["../M03/local/01-advanced-queries.sql"], "azure": [] } },
+    { "module": 4,  "ready": true,  "setup": { "common": [], "local": ["../M04/local/01-review-target.sql", "../M04/local/02-reference-improvement.sql"], "azure": [] } },
+    { "module": 5,  "ready": true,  "setup": { "common": ["../M05/common/01-security.sql"], "local": ["../M05/local/01-verify-security.sql"], "azure": [] } },
+    { "module": 6,  "ready": true,  "setup": { "common": ["../M06/common/01-workload.sql"], "local": ["../M06/local/01-plans-query-store-dmvs.sql"], "azure": [] } },
+    { "module": 7,  "ready": true,  "setup": { "common": ["../M07/common/01-inventory-deployment-log.sql"], "local": [], "azure": [] } },
+    { "module": 8,  "ready": true,  "setup": { "common": ["../M08/common/01-product-api.sql"], "local": [], "azure": [] } },
+    { "module": 9,  "ready": true,  "setup": { "common": ["../M09/common/01-review-data.sql"], "local": ["../M09/local/01-feature-detection.sql"], "azure": ["../M09/azure/01-external-model.sql"] } },
+    { "module": 10, "ready": true,  "setup": { "common": ["../M10/common/01-search-data.sql"], "local": ["../M10/local/01-search.sql"], "azure": ["../M10/azure/01-ann-search.sql"] } },
+    { "module": 11, "ready": true,  "setup": { "common": ["../M11/common/01-local-rag.sql"], "local": ["../M11/local/01-build-prompt.sql"], "azure": ["../M11/azure/01-rag-procedure.sql"] } }
+  ]
+}

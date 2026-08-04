@@ -1,23 +1,23 @@
 :setvar AzureOpenAIEndpointName "REPLACE_AT_RUNTIME"
 :setvar ChatDeploymentName "REPLACE_AT_RUNTIME"
 
-CREATE OR ALTER PROCEDURE dbo.usp_AskProductQuestion
+CREATE OR ALTER PROCEDURE ai.usp_AskProductQuestion
     @Question nvarchar(1000),
     @Answer nvarchar(max) OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
 
+    /* Retrieve grounding context from the M10 search corpus (search schema),
+       which is built from the canonical AdventureGearAI products and reviews. */
     DECLARE @Context nvarchar(max) =
     (
         SELECT TOP (5)
-            p.ProductName,
-            r.Rating,
-            r.ReviewTitle,
-            r.ReviewText
-        FROM dbo.ProductReviews AS r
-        INNER JOIN dbo.Products AS p ON p.ProductID = r.ProductID
-        ORDER BY r.Rating DESC, r.ReviewID
+            d.ProductName,
+            d.Rating,
+            d.DocumentText
+        FROM search.SearchDocuments AS d
+        ORDER BY d.Rating DESC, d.DocumentID
         FOR JSON PATH
     );
 

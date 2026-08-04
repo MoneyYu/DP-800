@@ -1,10 +1,21 @@
+/*
+    M11 common setup — local RAG prompt builder for AdventureGearAI.
+
+    ai.usp_BuildRagPrompt retrieves grounding context from search.SearchDocuments
+    (seeded by M10 from catalog.Products + customer.ProductReviews) and augments a
+    chat prompt with it. Generation stays local-only: the procedure reports
+    whether sys.sp_invoke_external_rest_endpoint exists but never calls out. The ai
+    schema is created by the core bootstrap; the procedure is created with
+    CREATE OR ALTER so this script is safe to re-run.
+*/
 SET NOCOUNT ON;
+SET XACT_ABORT ON;
 GO
 
-DROP PROCEDURE IF EXISTS dbo.usp_BuildRagPrompt;
+USE [AdventureGearAI];
 GO
 
-CREATE OR ALTER PROCEDURE dbo.usp_BuildRagPrompt
+CREATE OR ALTER PROCEDURE ai.usp_BuildRagPrompt
     @Question nvarchar(1000)
 AS
 BEGIN
@@ -18,18 +29,19 @@ BEGIN
             ELSE N'trail'
         END;
 
+    /* Retrieve grounding context from the M10 search corpus (search schema),
+       which is itself built from the canonical AdventureGearAI products and
+       customer reviews. */
     DECLARE @Context nvarchar(max) =
     (
         SELECT TOP (3)
-            p.ProductName,
-            r.Rating,
-            r.ReviewTitle,
-            r.ReviewText
-        FROM dbo.ProductReviews AS r
-        INNER JOIN dbo.Products AS p ON p.ProductID = r.ProductID
-        WHERE p.ProductName LIKE N'%' + @SearchTerm + N'%'
-           OR r.ReviewText LIKE N'%' + @SearchTerm + N'%'
-        ORDER BY r.Rating DESC, r.ReviewID
+            d.ProductName,
+            d.Rating,
+            d.DocumentText
+        FROM search.SearchDocuments AS d
+        WHERE d.ProductName LIKE N'%' + @SearchTerm + N'%'
+           OR d.DocumentText LIKE N'%' + @SearchTerm + N'%'
+        ORDER BY d.Rating DESC, d.DocumentID
         FOR JSON PATH
     );
 
@@ -61,4 +73,7 @@ BEGIN
             ELSE N'LOCAL STOP: this engine/build does not expose sys.sp_invoke_external_rest_endpoint.'
         END AS LocalDifference;
 END;
+GO
+
+PRINT N'M11 ai.usp_BuildRagPrompt is ready (retrieves from search.SearchDocuments).';
 GO

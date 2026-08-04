@@ -1,45 +1,84 @@
+/*
+    M08 common setup — REST/GraphQL API surface for AdventureGearAI.
+
+    Instead of creating duplicate ApiProducts/ApiCategories tables, this script
+    projects the canonical AdventureGearAI domain data through read-only views in
+    the api schema. Data API Builder (common/dab-config.json) exposes these views
+    over REST and GraphQL. The api schema is created by the core bootstrap; this
+    script is idempotent and safe to re-run.
+*/
 SET NOCOUNT ON;
+SET XACT_ABORT ON;
 GO
 
+USE [AdventureGearAI];
+GO
+
+/* Remove any legacy duplicate API tables/views from earlier per-module demos. */
 DROP VIEW IF EXISTS dbo.ProductCatalogView;
 DROP TABLE IF EXISTS dbo.ApiProducts;
 DROP TABLE IF EXISTS dbo.ApiCategories;
-
-CREATE TABLE dbo.ApiCategories
-(
-    CategoryID int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ApiCategories PRIMARY KEY,
-    CategoryName nvarchar(50) NOT NULL
-);
-
-CREATE TABLE dbo.ApiProducts
-(
-    ProductID int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ApiProducts PRIMARY KEY,
-    ProductName nvarchar(100) NOT NULL,
-    CategoryID int NOT NULL CONSTRAINT FK_ApiProducts_ApiCategories REFERENCES dbo.ApiCategories(CategoryID),
-    UnitPrice decimal(10,2) NOT NULL,
-    UnitsInStock int NOT NULL,
-    Discontinued bit NOT NULL CONSTRAINT DF_ApiProducts_Discontinued DEFAULT 0
-);
-
-INSERT dbo.ApiCategories (CategoryName) VALUES (N'Bikes'), (N'Components'), (N'Accessories');
-INSERT dbo.ApiProducts (ProductName, CategoryID, UnitPrice, UnitsInStock) VALUES
-    (N'Trailblazer 29 Bike', 1, 1499.00, 8),
-    (N'Puncture Guard Tire', 2, 62.50, 40),
-    (N'Night Beacon Light', 3, 44.90, 0);
 GO
 
-CREATE OR ALTER VIEW dbo.ProductCatalogView
+CREATE OR ALTER VIEW api.Categories
+AS
+SELECT
+    c.CategoryID,
+    c.CategoryName,
+    c.Description,
+    c.IsActive
+FROM catalog.Categories AS c;
+GO
+
+CREATE OR ALTER VIEW api.Products
+AS
+SELECT
+    p.ProductID,
+    p.ProductName,
+    p.CategoryID,
+    p.Sku,
+    p.UnitPrice,
+    COALESCE(i.QuantityOnHand, 0) AS UnitsInStock,
+    p.IsActive
+FROM catalog.Products AS p
+LEFT JOIN catalog.Inventory AS i ON i.ProductID = p.ProductID;
+GO
+
+CREATE OR ALTER VIEW api.ProductCatalog
 AS
 SELECT
     p.ProductID,
     p.ProductName,
     c.CategoryName,
     p.UnitPrice,
-    p.UnitsInStock,
-    CASE WHEN p.UnitsInStock = 0 THEN N'Out of stock'
-         WHEN p.UnitsInStock < 10 THEN N'Low stock'
-         ELSE N'Available' END AS StockStatus
-FROM dbo.ApiProducts AS p
-INNER JOIN dbo.ApiCategories AS c ON c.CategoryID = p.CategoryID
-WHERE p.Discontinued = 0;
+    COALESCE(i.QuantityOnHand, 0) AS UnitsInStock,
+    CASE
+        WHEN COALESCE(i.QuantityOnHand, 0) = 0 THEN N'Out of stock'
+        WHEN i.QuantityOnHand < i.ReorderThreshold THEN N'Low stock'
+        ELSE N'Available'
+    END AS StockStatus
+FROM catalog.Products AS p
+INNER JOIN catalog.Categories AS c ON c.CategoryID = p.CategoryID
+LEFT JOIN catalog.Inventory AS i ON i.ProductID = p.ProductID
+WHERE p.IsActive = 1;
+GO
+
+CREATE OR ALTER VIEW api.InventoryAvailability
+AS
+SELECT
+    i.ProductID,
+    p.ProductName,
+    i.QuantityOnHand,
+    i.ReorderThreshold,
+    i.WarehouseLocation,
+    CASE
+        WHEN i.QuantityOnHand = 0 THEN N'Out of stock'
+        WHEN i.QuantityOnHand < i.ReorderThreshold THEN N'Reorder'
+        ELSE N'In stock'
+    END AS AvailabilityStatus
+FROM catalog.Inventory AS i
+INNER JOIN catalog.Products AS p ON p.ProductID = i.ProductID;
+GO
+
+PRINT N'M08 api.* views over the AdventureGearAI catalog are ready.';
 GO

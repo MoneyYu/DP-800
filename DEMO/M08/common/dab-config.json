@@ -11,11 +11,19 @@
   },
   "entities": {
     "Category": {
-      "source": { "object": "dbo.ApiCategories", "type": "table" },
+      "source": {
+        "object": "api.Categories",
+        "type": "view",
+        "key-fields": ["CategoryID"]
+      },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
     },
     "Product": {
-      "source": { "object": "dbo.ApiProducts", "type": "table" },
+      "source": {
+        "object": "api.Products",
+        "type": "view",
+        "key-fields": ["ProductID"]
+      },
       "mappings": {
         "ProductID": "id",
         "ProductName": "name",
@@ -26,7 +34,16 @@
     },
     "ProductCatalog": {
       "source": {
-        "object": "dbo.ProductCatalogView",
+        "object": "api.ProductCatalog",
+        "type": "view",
+        "key-fields": ["ProductID"]
+      },
+      "graphql": { "operation": "query" },
+      "permissions": [{ "role": "anonymous", "actions": ["read"] }]
+    },
+    "InventoryAvailability": {
+      "source": {
+        "object": "api.InventoryAvailability",
         "type": "view",
         "key-fields": ["ProductID"]
       },

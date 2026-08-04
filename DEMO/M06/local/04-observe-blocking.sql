@@ -1,3 +1,9 @@
+/*
+    M06 local/04-observe-blocking.sql  (INTERACTIVE — excluded from the runner manifest)
+
+    Session 3 of the blocking demo. Run manually to observe the blocked/blocking
+    relationship while 02-blocker.sql and 03-blocked.sql are active.
+*/
 SELECT
     r.session_id AS BlockedSession,
     r.blocking_session_id AS BlockingSession,
