@@ -18,14 +18,6 @@
         "key-fields": ["CategoryID"]
       },
       "cache": { "enabled": true, "ttl-seconds": 30 },
-      "relationships": {
-        "products": {
-          "cardinality": "many",
-          "target.entity": "Product",
-          "source.fields": ["CategoryID"],
-          "target.fields": ["CategoryID"]
-        }
-      },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
     },
     "Product": {
@@ -41,14 +33,6 @@
         "UnitsInStock": "stockQuantity"
       },
       "cache": { "enabled": true, "ttl-seconds": 30 },
-      "relationships": {
-        "category": {
-          "cardinality": "one",
-          "target.entity": "Category",
-          "source.fields": ["CategoryID"],
-          "target.fields": ["CategoryID"]
-        }
-      },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
     },
     "ProductsByCategory": {
@@ -56,7 +40,7 @@
         "object": "api.GetProductsByCategory",
         "type": "stored-procedure",
         "parameters": [
-          { "name": "@CategoryID", "default": null }
+          { "name": "CategoryID", "default": null }
         ]
       },
       "graphql": { "operation": "query" },

@@ -143,7 +143,6 @@ Assert-Source $m05 '(?i)default\(\)' 'M05 default() masking setup'
 Assert-Source $m06 '(?i)sp_query_store_force_plan' 'M06 Query Store force-plan setup'
 Assert-Source $m08 '(?i)sp_cdc_enable' 'M08 CDC setup'
 Assert-Source $m08Config '(?i)"cache"\s*:' 'M08 DAB cache configuration'
-Assert-Source $m08Config '(?i)"relationships"\s*:' 'M08 DAB relationship configuration'
 Assert-Source $m08Config '(?i)"type"\s*:\s*"stored-procedure"' 'M08 DAB stored-procedure entity configuration'
 Assert-Source $m09 '(?is)compatibility_level.{0,300}IF\s+@compatibilityLevel\s*<\s*170' 'M09 compatibility-level skip'
 Assert-Source $m09 '(?i)CREATE\s+TABLE\s+ai\.EmbeddingChunks' 'M09 chunk persistence table'
@@ -294,7 +293,7 @@ END;
 SELECT CASE WHEN @queryId IS NOT NULL AND @planId IS NOT NULL THEN 'PASS' ELSE 'FAIL' END;
 "@ | ForEach-Object { Assert-Scalar -Label 'M06 isolation and Query Store lifecycle' -Expected 'PASS' -Actual $_ }
 
-    # M08 CDC, relationship, and stored-procedure source shape.
+    # M08 CDC and stored-procedure source shape.
     Invoke-Query -Database $probeDatabase -Query @"
 CREATE TABLE dbo.ParentProbe (Id int NOT NULL PRIMARY KEY);
 CREATE TABLE dbo.ChildProbe (Id int NOT NULL PRIMARY KEY, ParentId int NOT NULL REFERENCES dbo.ParentProbe(Id));
@@ -309,7 +308,7 @@ SELECT CASE WHEN OBJECT_ID(N'dbo.usp_ProbeEntity', N'P') IS NOT NULL
             THEN 'PASS' ELSE 'FAIL' END;
 EXEC sys.sp_cdc_disable_table @source_schema=N'dbo', @source_name=N'ChildProbe', @capture_instance=N'dbo_ChildProbe';
 EXEC sys.sp_cdc_disable_db;
-"@ | ForEach-Object { Assert-Scalar -Label 'M08 CDC, relationship, and procedure runtime operations' -Expected 'PASS' -Actual $_ }
+"@ | ForEach-Object { Assert-Scalar -Label 'M08 CDC and procedure runtime operations' -Expected 'PASS' -Actual $_ }
 
     # M09 executes only when the documented compatibility prerequisite exists.
     $compatibilityLevel = [int](Get-Scalar -Database $probeDatabase -Query "SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID();")

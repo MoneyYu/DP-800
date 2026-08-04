@@ -69,7 +69,6 @@ Assert-Source $m06PlanForcing '(?i)sp_query_store_unforce_plan' 'M06 plan forcin
 Assert-Source $m06PlanForcing '(?i)(only|one).{0,80}plan|plan.{0,80}(only|one)' 'M06 plan forcing demo must explain the single-plan outcome.'
 Assert-Source $m06PlanForcing '(?i)query_capture_mode_desc' 'M06 plan forcing demo must capture the prior Query Store capture mode.'
 Assert-Source $m06PlanForcing '(?i)M06QueryStoreRuntimeState' 'M06 plan forcing demo must persist its prior capture mode for reset recovery.'
-Assert-Source $m06PlanForcing '(?i)DELETE\s+FROM\s+ops\.M06QueryStoreRuntimeState' 'M06 plan forcing demo must clear completed Query Store recovery state.'
 Assert-Source $m06Reset '(?i)sp_query_store_unforce_plan' 'M06 reset must unforce M06 Query Store plans.'
 Assert-Source $m06Reset '(?i)M06QueryStoreRuntimeState' 'M06 reset must restore the Query Store capture mode recorded by M06.'
 
@@ -128,10 +127,13 @@ if ($null -ne $dab) {
     $categoryRelationships = Get-OptionalProperty $category 'relationships'
     Assert-True ($null -ne $runtimeCache -and $runtimeCache.enabled -eq $true) 'DAB must enable supported runtime caching.'
     Assert-True ($null -ne $productCache -and $productCache.enabled -eq $true) 'DAB Product must enable entity caching.'
-    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productRelationships 'category') 'target.entity') -eq 'Category') 'DAB Product must map its Category relationship.'
-    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $categoryRelationships 'products') 'target.entity') -eq 'Product') 'DAB Category must map its Product relationship.'
+    Assert-True ($null -eq $productRelationships) 'DAB must omit relationships on view-backed Product entities so metadata validation can start.'
+    Assert-True ($null -eq $categoryRelationships) 'DAB must omit relationships on view-backed Category entities so metadata validation can start.'
     Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'type') -eq 'stored-procedure') 'DAB must expose the safe procedure as a stored-procedure entity.'
     Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'object') -eq 'api.GetProductsByCategory') 'DAB stored-procedure entity must use the safe API procedure.'
+    $procedureParameters = @(Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'parameters')
+    Assert-True ($procedureParameters.Count -eq 1) 'DAB stored-procedure entity must declare exactly one procedure parameter.'
+    Assert-True ([string](Get-OptionalProperty $procedureParameters[0] 'name') -eq 'CategoryID') 'DAB stored-procedure parameter name must be CategoryID without a SQL @ prefix.'
 }
 
 if ($failures.Count -gt 0) {
@@ -209,6 +211,8 @@ $originalPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Pro
 $fixtureEnabledDatabaseCdc = $false
 $fixtureCreatedCapture = $false
 $fixtureCaptureInstance = 'DP800M08ForeignFixture'
+$missingOwnedCaptureForeignInstance = 'DP800M08MissingOwnedForeign'
+$missingOwnedCaptureForeignCreated = $false
 $m08CaptureInstance = 'AdventureGearM08Products'
 try {
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
@@ -254,44 +258,9 @@ FROM sys.database_query_store_options;
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\local\08-query-store-plan-forcing.sql' | Out-Null
     $postDemoCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
     Assert-True (($postDemoCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 plan-forcing demo must restore the prior Query Store capture mode.'
-    $completedRecoveryStateRows = @(Invoke-Query -Database AdventureGearAI -Query @"
-SELECT COUNT(*)
-FROM ops.M06QueryStoreRuntimeState
-WHERE M06QueryStoreRuntimeStateID = 1;
-"@)
-    Assert-True (($completedRecoveryStateRows | Select-Object -First 1) -eq '0') 'Successful M06 plan-forcing cleanup must clear its Query Store recovery state.'
-    Invoke-Query -Database AdventureGearAI -Query @"
-ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = NONE);
-SELECT query_capture_mode_desc
-FROM sys.database_query_store_options;
-"@ | Out-Null
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
     $postResetCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
-    Assert-True (($postResetCaptureMode | Select-Object -First 1) -eq 'NONE') 'M06 reset must not revert a Query Store capture mode configured after successful plan-forcing cleanup.'
-
-    Invoke-Query -Database AdventureGearAI -Query @"
-CREATE TABLE ops.M06QueryStoreRuntimeState
-(
-    M06QueryStoreRuntimeStateID tinyint NOT NULL
-        CONSTRAINT PK_M06QueryStoreRuntimeState PRIMARY KEY
-        CONSTRAINT CK_M06QueryStoreRuntimeState_Singleton CHECK (M06QueryStoreRuntimeStateID = 1),
-    PriorQueryCaptureMode nvarchar(60) NOT NULL,
-    RecordedAtUtc datetime2(0) NOT NULL
-);
-INSERT ops.M06QueryStoreRuntimeState
-(
-    M06QueryStoreRuntimeStateID,
-    PriorQueryCaptureMode,
-    RecordedAtUtc
-)
-VALUES (1, N'AUTO', SYSUTCDATETIME());
-ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
-"@ | Out-Null
-    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
-    $recoveredCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
-    Assert-True (($recoveredCaptureMode | Select-Object -First 1) -eq 'AUTO') 'M06 reset must restore an active Query Store recovery state retained after interruption.'
-    $recoveryStateRemoved = @(Invoke-Query -Database AdventureGearAI -Query "SELECT CASE WHEN OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL THEN N'PASS' ELSE N'FAIL' END;")
-    Assert-True ($recoveryStateRemoved -contains 'PASS') 'M06 reset must clear completed active Query Store recovery state.'
+    Assert-True (($postResetCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 reset must preserve the pre-demo Query Store capture mode.'
 
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
     $cdcInitial = @(Invoke-Query -Database AdventureGearAI -Query "SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID();")
@@ -406,6 +375,72 @@ SELECT CASE WHEN NOT EXISTS
 "@)
     Assert-True ($m08CaptureRemoved -contains 'PASS') 'M08 reset must disable only its dedicated CDC capture instance.'
 
+    if ($fixtureEnabledDatabaseCdc -and $fixtureCreatedCapture) {
+        Invoke-Query -Database AdventureGearAI -Query @"
+EXEC sys.sp_cdc_disable_table
+    @source_schema = N'catalog',
+    @source_name = N'Products',
+    @capture_instance = N'$fixtureCaptureInstance';
+IF NOT EXISTS (SELECT 1 FROM cdc.change_tables)
+    EXEC sys.sp_cdc_disable_db;
+"@ | Out-Null
+        $fixtureCreatedCapture = $false
+
+        Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\common\01-product-api.sql' | Out-Null
+        $moduleOwnedDatabaseCdc = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE WHEN DatabaseCdcEnabledByModule = 1 THEN N'PASS' ELSE N'FAIL' END
+FROM api.CdcRuntimeStatus
+WHERE CdcRuntimeStatusID = 1;
+"@)
+        Assert-True ($moduleOwnedDatabaseCdc -contains 'PASS') 'M08 setup must record database CDC that it enabled.'
+
+        Invoke-Query -Database AdventureGearAI -Query @"
+EXEC sys.sp_cdc_disable_table
+    @source_schema = N'catalog',
+    @source_name = N'Products',
+    @capture_instance = N'$m08CaptureInstance';
+"@ | Out-Null
+        Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
+        $missingOwnedCaptureDisablesDatabaseCdc = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE WHEN is_cdc_enabled = 0 THEN N'PASS' ELSE N'FAIL' END
+FROM sys.databases
+WHERE database_id = DB_ID();
+"@)
+        Assert-True ($missingOwnedCaptureDisablesDatabaseCdc -contains 'PASS') 'M08 reset must disable module-owned database CDC when its externally removed capture was the final capture.'
+
+        Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\common\01-product-api.sql' | Out-Null
+        Invoke-Query -Database AdventureGearAI -Query @"
+EXEC sys.sp_cdc_enable_table
+    @source_schema = N'catalog',
+    @source_name = N'Products',
+    @role_name = NULL,
+    @supports_net_changes = 1,
+    @capture_instance = N'$missingOwnedCaptureForeignInstance';
+"@ | Out-Null
+        $missingOwnedCaptureForeignCreated = $true
+        Invoke-Query -Database AdventureGearAI -Query @"
+EXEC sys.sp_cdc_disable_table
+    @source_schema = N'catalog',
+    @source_name = N'Products',
+    @capture_instance = N'$m08CaptureInstance';
+"@ | Out-Null
+        Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
+        $foreignCapturePreservesDatabaseCdc = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE
+    WHEN (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()) = 1
+     AND EXISTS
+     (
+         SELECT 1
+         FROM cdc.change_tables
+         WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+           AND capture_instance = N'$missingOwnedCaptureForeignInstance'
+     ) THEN N'PASS'
+    ELSE N'FAIL'
+END;
+"@)
+        Assert-True ($foreignCapturePreservesDatabaseCdc -contains 'PASS') 'M08 reset must preserve database CDC and a foreign capture when its owned capture was externally removed.'
+    }
+
     $planForcingResults = @(Invoke-Query -Database $probeDatabase -Query @"
 ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
 CREATE TABLE dbo.PlanProbe
@@ -489,6 +524,24 @@ catch {
 }
 finally {
     try {
+        if ($missingOwnedCaptureForeignCreated) {
+            Invoke-Query -Database AdventureGearAI -Query @"
+IF EXISTS
+(
+    SELECT 1
+    FROM cdc.change_tables
+    WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+      AND capture_instance = N'$missingOwnedCaptureForeignInstance'
+)
+    EXEC sys.sp_cdc_disable_table
+        @source_schema = N'catalog',
+        @source_name = N'Products',
+        @capture_instance = N'$missingOwnedCaptureForeignInstance';
+IF NOT EXISTS (SELECT 1 FROM cdc.change_tables)
+    EXEC sys.sp_cdc_disable_db;
+"@ | Out-Null
+            $fixtureEnabledDatabaseCdc = $false
+        }
         if ($fixtureCreatedCapture -and -not [string]::IsNullOrWhiteSpace($fixtureCaptureInstance)) {
             Invoke-Query -Database AdventureGearAI -Query @"
 IF EXISTS

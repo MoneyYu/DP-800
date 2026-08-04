@@ -207,7 +207,6 @@ foreach ($requirement in @(
     @{ Text = "$m08`n$m08Reset"; Pattern = '(?i)sp_cdc_enable'; Message = 'M08 must enable CDC.' },
     @{ Text = "$m08`n$m08Reset"; Pattern = '(?i)sp_cdc_disable'; Message = 'M08 must disable CDC during cleanup.' },
     @{ Text = $m08Config; Pattern = '(?i)"cache"\s*:'; Message = 'M08 DAB configuration must define cache settings.' },
-    @{ Text = $m08Config; Pattern = '(?i)"relationships"\s*:'; Message = 'M08 DAB configuration must define entity relationships.' },
     @{ Text = $m08Config; Pattern = '(?i)"type"\s*:\s*"stored-procedure"'; Message = 'M08 DAB configuration must expose a stored-procedure entity.' },
     @{ Text = "$m09`n$m09Local"; Pattern = '(?i)AI_GENERATE_CHUNKS\s*\('; Message = 'M09 must invoke AI_GENERATE_CHUNKS.' },
     @{ Text = $m09; Pattern = '(?is)compatibility_level.{0,300}IF\s+@compatibilityLevel\s*<\s*170'; Message = 'M09 must truthfully skip AI_GENERATE_CHUNKS below compatibility level 170.' },

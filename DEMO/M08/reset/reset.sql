@@ -137,16 +137,20 @@ BEGIN TRY
                 @source_schema = N'catalog',
                 @source_name = N'Products',
                 @capture_instance = @ExpectedM08CaptureInstance;
-
-            EXEC sys.sp_executesql
-                N'SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
-                N'@RemainingCount int OUTPUT',
-                @RemainingCount = @RemainingCaptureCount OUTPUT;
-
-            IF @DisableCdcDatabase = 1
-               AND @RemainingCaptureCount = 0
-                EXEC sys.sp_cdc_disable_db;
         END;
+
+        /* Count every surviving capture while holding the ownership lock. This
+           also covers an owned capture that was removed outside this module:
+           database CDC can be disabled only when M08 enabled it and no capture
+           remains. Foreign captures are never disabled by this reset. */
+        EXEC sys.sp_executesql
+            N'SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
+            N'@RemainingCount int OUTPUT',
+            @RemainingCount = @RemainingCaptureCount OUTPUT;
+
+        IF @DisableCdcDatabase = 1
+           AND @RemainingCaptureCount = 0
+            EXEC sys.sp_cdc_disable_db;
     END;
 
     DROP TABLE IF EXISTS api.CdcRuntimeStatus;
