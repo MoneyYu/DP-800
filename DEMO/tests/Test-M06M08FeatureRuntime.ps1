@@ -66,12 +66,17 @@ Assert-Source $m06Reset '(?i)M06QueryStoreRuntimeState' 'M06 reset must restore 
 
 Assert-Source $m08Api '(?i)sp_cdc_enable_db' 'M08 must enable CDC at database scope.'
 Assert-Source $m08Api '(?i)sp_cdc_enable_table' 'M08 must enable CDC for the product source table.'
+Assert-Source $m08Api '(?i)AdventureGearM08Products' 'M08 must use its dedicated CDC capture instance name.'
+Assert-Source $m08Api '(?i)sp_getapplock' 'M08 setup must exclusively lock CDC ownership changes.'
+Assert-Source $m08Api '(?i)@capture_instance\s*=\s*@m08CaptureInstance' 'M08 setup must pass its exact capture instance to CDC enablement.'
 Assert-Source $m08Api '(?i)M08CaptureInstance' 'M08 must persist the exact CDC capture instance it creates.'
 Assert-Source $m08Api '(?i)dm_server_services|SQL Server Agent' 'M08 must record SQL Agent availability.'
 Assert-Source $m08Api '(?i)CREATE\s+OR\s+ALTER\s+VIEW\s+api\.Products' 'M08 must create the Product read model.'
 Assert-Source $m08Api '(?i)CREATE\s+OR\s+ALTER\s+PROCEDURE\s+api\.GetProductsByCategory' 'M08 must create the safe procedure source.'
 Assert-Source $m08Reset '(?i)sp_cdc_disable_table' 'M08 reset must disable the owned CDC table capture.'
 Assert-Source $m08Reset '(?i)sp_cdc_disable_db' 'M08 reset must disable CDC when M08 enabled it.'
+Assert-Source $m08Reset '(?i)AdventureGearM08Products' 'M08 reset must revalidate the dedicated CDC capture instance.'
+Assert-Source $m08Reset '(?i)sp_getapplock' 'M08 reset must exclusively lock CDC ownership changes.'
 Assert-Source $m08Reset '(?i)M08CaptureInstance' 'M08 reset must target only M08''s recorded CDC capture instance.'
 Assert-Source $m08Reset '(?i)DROP\s+PROCEDURE.*GetProductsByCategory' 'M08 reset must remove the owned procedure.'
 
@@ -161,7 +166,8 @@ SELECT CONVERT(int, @owned);
 $originalPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
 $fixtureEnabledDatabaseCdc = $false
 $fixtureCreatedCapture = $false
-$fixtureCaptureInstance = $null
+$fixtureCaptureInstance = 'DP800M08ForeignFixture'
+$m08CaptureInstance = 'AdventureGearM08Products'
 try {
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     Invoke-Query -Database master -Query "CREATE DATABASE [$probeDatabase];" | Out-Null
@@ -216,17 +222,36 @@ FROM sys.database_query_store_options;
         Invoke-Query -Database AdventureGearAI -Query 'EXEC sys.sp_cdc_enable_db;' | Out-Null
         $fixtureEnabledDatabaseCdc = $true
     }
-    $fixtureCaptureInstance = @(Invoke-Query -Database AdventureGearAI -Query @"
-SELECT capture_instance
-FROM cdc.change_tables
-WHERE source_object_id = OBJECT_ID(N'catalog.Products');
-"@ | Select-Object -First 1)
-    if ([string]::IsNullOrWhiteSpace($fixtureCaptureInstance)) {
-        Invoke-Query -Database AdventureGearAI -Query "EXEC sys.sp_cdc_enable_table @source_schema = N'catalog', @source_name = N'Products', @role_name = NULL, @supports_net_changes = 1;" | Out-Null
-        $fixtureCaptureInstance = @(Invoke-Query -Database AdventureGearAI -Query "SELECT capture_instance FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'catalog.Products');" | Select-Object -First 1)
+    $fixtureCaptureExists = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM cdc.change_tables
+    WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+      AND capture_instance = N'$fixtureCaptureInstance'
+) THEN N'PASS' ELSE N'FAIL' END;
+"@)
+    if ($fixtureCaptureExists -notcontains 'PASS') {
+        Invoke-Query -Database AdventureGearAI -Query "EXEC sys.sp_cdc_enable_table @source_schema = N'catalog', @source_name = N'Products', @role_name = NULL, @supports_net_changes = 1, @capture_instance = N'$fixtureCaptureInstance';" | Out-Null
         $fixtureCreatedCapture = $true
     }
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\common\01-product-api.sql' | Out-Null
+    $m08CaptureCreated = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM cdc.change_tables
+    WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+      AND capture_instance = N'$m08CaptureInstance'
+) THEN N'PASS' ELSE N'FAIL' END;
+"@)
+    Assert-True ($m08CaptureCreated -contains 'PASS') 'M08 setup must create its dedicated CDC capture beside a foreign capture.'
+    $recordedM08Capture = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT M08CaptureInstance
+FROM api.CdcRuntimeStatus
+WHERE CdcRuntimeStatusID = 1;
+"@)
+    Assert-True (($recordedM08Capture | Select-Object -First 1) -eq $m08CaptureInstance) 'M08 must record only its dedicated CDC capture instance.'
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
     $cdcPreserved = @(Invoke-Query -Database AdventureGearAI -Query @"
 SELECT CASE WHEN EXISTS
@@ -238,6 +263,16 @@ SELECT CASE WHEN EXISTS
 ) THEN N'PASS' ELSE N'FAIL' END;
 "@)
     Assert-True ($cdcPreserved -contains 'PASS') "M08 reset must preserve pre-existing CDC capture '$fixtureCaptureInstance'; observed '$($cdcPreserved -join ', ')'."
+    $m08CaptureRemoved = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE WHEN NOT EXISTS
+(
+    SELECT 1
+    FROM cdc.change_tables
+    WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+      AND capture_instance = N'$m08CaptureInstance'
+) THEN N'PASS' ELSE N'FAIL' END;
+"@)
+    Assert-True ($m08CaptureRemoved -contains 'PASS') 'M08 reset must disable only its dedicated CDC capture instance.'
 
     $planForcingResults = @(Invoke-Query -Database $probeDatabase -Query @"
 ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);

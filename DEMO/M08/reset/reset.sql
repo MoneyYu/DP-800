@@ -61,62 +61,92 @@ DECLARE @DisableCdcDatabase bit = 0;
 DECLARE @M08CaptureInstance sysname;
 DECLARE @M08CaptureTableObjectId int;
 DECLARE @M08CaptureTableCreatedAt datetime;
-IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
-   AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NOT NULL
-   AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NOT NULL
-   AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NOT NULL
-    SELECT
-        @DisableCdcDatabase = DatabaseCdcEnabledByModule,
-        @M08CaptureInstance = M08CaptureInstance,
-        @M08CaptureTableObjectId = M08CaptureTableObjectId,
-        @M08CaptureTableCreatedAt = M08CaptureTableCreatedAt
-    FROM api.CdcRuntimeStatus
-    WHERE CdcRuntimeStatusID = 1;
+DECLARE @ExpectedM08CaptureInstance sysname = N'AdventureGearM08Products';
+DECLARE @M08CaptureExists bit = 0;
+DECLARE @RemainingCaptureCount int = 0;
+DECLARE @AppLockResult int;
 
-IF @M08CaptureInstance IS NOT NULL
-   AND EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
-BEGIN
-    /* cdc.change_tables does not exist when database CDC is disabled. Query it
-       dynamically only after the database-level guard has succeeded. */
-    DECLARE @M08CaptureExists bit = 0;
-    DECLARE @RemainingCaptureCount int = 0;
-    EXEC sys.sp_executesql
-        N'
-        SELECT @CaptureExists = CONVERT(bit, CASE WHEN EXISTS
-        (
-            SELECT 1
-            FROM cdc.change_tables
-            WHERE source_object_id = OBJECT_ID(N''catalog.Products'')
-              AND capture_instance = @CaptureInstance
-              AND OBJECT_ID(N''cdc.'' + capture_instance + N''_CT'') = @CaptureTableObjectId
-              AND EXISTS
-              (
-                  SELECT 1
-                  FROM sys.objects AS cdcTable
-                  WHERE cdcTable.object_id = @CaptureTableObjectId
-                    AND cdcTable.create_date = @CaptureTableCreatedAt
-              )
-        ) THEN 1 ELSE 0 END);
-        SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
-        N'@CaptureInstance sysname, @CaptureTableObjectId int, @CaptureTableCreatedAt datetime, @CaptureExists bit OUTPUT, @RemainingCount int OUTPUT',
-        @CaptureInstance = @M08CaptureInstance,
-        @CaptureTableObjectId = @M08CaptureTableObjectId,
-        @CaptureTableCreatedAt = @M08CaptureTableCreatedAt,
-        @CaptureExists = @M08CaptureExists OUTPUT,
-        @RemainingCount = @RemainingCaptureCount OUTPUT;
+EXEC @AppLockResult = sys.sp_getapplock
+    @Resource = N'DP800.M08.CdcOwnership',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
 
-    IF @M08CaptureExists = 1
+IF @AppLockResult < 0
+    THROW 51081, 'M08 reset could not acquire the CDC ownership lock.', 1;
+
+BEGIN TRY
+    /* The application lock protects this revalidation-and-disable sequence from
+       concurrent M08 setup/reset runs. Do not infer ownership from the source
+       table: only the recorded dedicated capture identity is removable. */
+    IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NOT NULL
+        SELECT
+            @DisableCdcDatabase = DatabaseCdcEnabledByModule,
+            @M08CaptureInstance = M08CaptureInstance,
+            @M08CaptureTableObjectId = M08CaptureTableObjectId,
+            @M08CaptureTableCreatedAt = M08CaptureTableCreatedAt
+        FROM api.CdcRuntimeStatus
+        WHERE CdcRuntimeStatusID = 1;
+
+    IF @M08CaptureInstance = @ExpectedM08CaptureInstance
+       AND EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
     BEGIN
-        EXEC sys.sp_cdc_disable_table
-            @source_schema = N'catalog',
-            @source_name = N'Products',
-            @capture_instance = @M08CaptureInstance;
+        /* cdc.change_tables does not exist when database CDC is disabled. Query it
+           dynamically only after the database-level guard has succeeded. */
+        EXEC sys.sp_executesql
+            N'
+            SELECT @CaptureExists = CONVERT(bit, CASE WHEN EXISTS
+            (
+                SELECT 1
+                FROM cdc.change_tables
+                WHERE source_object_id = OBJECT_ID(N''catalog.Products'')
+                  AND capture_instance = @CaptureInstance
+                  AND OBJECT_ID(N''cdc.'' + capture_instance + N''_CT'') = @CaptureTableObjectId
+                  AND EXISTS
+                  (
+                      SELECT 1
+                      FROM sys.objects AS cdcTable
+                      WHERE cdcTable.object_id = @CaptureTableObjectId
+                        AND cdcTable.create_date = @CaptureTableCreatedAt
+                  )
+            ) THEN 1 ELSE 0 END);',
+            N'@CaptureInstance sysname, @CaptureTableObjectId int, @CaptureTableCreatedAt datetime, @CaptureExists bit OUTPUT',
+            @CaptureInstance = @ExpectedM08CaptureInstance,
+            @CaptureTableObjectId = @M08CaptureTableObjectId,
+            @CaptureTableCreatedAt = @M08CaptureTableCreatedAt,
+            @CaptureExists = @M08CaptureExists OUTPUT;
 
-        IF @DisableCdcDatabase = 1
-           AND @RemainingCaptureCount = 1
-            EXEC sys.sp_cdc_disable_db;
+        IF @M08CaptureExists = 1
+        BEGIN
+            EXEC sys.sp_cdc_disable_table
+                @source_schema = N'catalog',
+                @source_name = N'Products',
+                @capture_instance = @ExpectedM08CaptureInstance;
+
+            EXEC sys.sp_executesql
+                N'SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
+                N'@RemainingCount int OUTPUT',
+                @RemainingCount = @RemainingCaptureCount OUTPUT;
+
+            IF @DisableCdcDatabase = 1
+               AND @RemainingCaptureCount = 0
+                EXEC sys.sp_cdc_disable_db;
+        END;
     END;
-END;
+END TRY
+BEGIN CATCH
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
+    THROW;
+END CATCH;
+
+EXEC sys.sp_releaseapplock
+    @Resource = N'DP800.M08.CdcOwnership',
+    @LockOwner = N'Session';
 GO
 
 DROP PROCEDURE IF EXISTS api.GetProductsByCategory;

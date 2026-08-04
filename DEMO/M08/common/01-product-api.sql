@@ -56,23 +56,18 @@ DECLARE @engineEdition int = CONVERT(int, SERVERPROPERTY('EngineEdition'));
 DECLARE @sqlAgentAvailable bit = 0;
 DECLARE @databaseCdcEnabledByModule bit = 0;
 DECLARE @productCaptureEnabled bit = 0;
-DECLARE @m08CaptureInstance sysname;
+DECLARE @m08CaptureInstance sysname = N'AdventureGearM08Products';
 DECLARE @m08CaptureTableObjectId int;
 DECLARE @m08CaptureTableCreatedAt datetime;
+DECLARE @recordedM08CaptureInstance sysname;
+DECLARE @recordedM08CaptureTableObjectId int;
+DECLARE @recordedM08CaptureTableCreatedAt datetime;
 DECLARE @behavior nvarchar(1000);
+DECLARE @appLockResult int;
 
 /* Preserve the ownership marker across idempotent re-runs. Without it, a
    second run would forget that M08, rather than a pre-existing feature, enabled
-   CDC at database scope. */
-SELECT @databaseCdcEnabledByModule = DatabaseCdcEnabledByModule
-FROM api.CdcRuntimeStatus
-WHERE CdcRuntimeStatusID = 1;
-SELECT
-    @m08CaptureInstance = M08CaptureInstance,
-    @m08CaptureTableObjectId = M08CaptureTableObjectId,
-    @m08CaptureTableCreatedAt = M08CaptureTableCreatedAt
-FROM api.CdcRuntimeStatus
-WHERE CdcRuntimeStatusID = 1;
+   CDC at database scope. Read it only while holding the ownership lock. */
 
 /* Azure SQL Database manages CDC capture. Local SQL Server needs a running
    SQL Server Agent for capture/cleanup jobs; record that actual boundary. */
@@ -95,6 +90,25 @@ BEGIN
     END CATCH;
 END;
 
+EXEC @appLockResult = sys.sp_getapplock
+    @Resource = N'DP800.M08.CdcOwnership',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
+
+IF @appLockResult < 0
+    THROW 51080, 'M08 could not acquire the CDC ownership lock.', 1;
+
+SELECT @databaseCdcEnabledByModule = DatabaseCdcEnabledByModule
+FROM api.CdcRuntimeStatus
+WHERE CdcRuntimeStatusID = 1;
+SELECT
+    @recordedM08CaptureInstance = M08CaptureInstance,
+    @recordedM08CaptureTableObjectId = M08CaptureTableObjectId,
+    @recordedM08CaptureTableCreatedAt = M08CaptureTableCreatedAt
+FROM api.CdcRuntimeStatus
+WHERE CdcRuntimeStatusID = 1;
+
 BEGIN TRY
     IF (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()) = 0
     BEGIN
@@ -102,8 +116,10 @@ BEGIN TRY
         SET @databaseCdcEnabledByModule = 1;
     END;
 
-    IF @m08CaptureInstance IS NOT NULL
-       AND NOT EXISTS
+    /* A capture is M08-owned only when its prior exact identity was recorded.
+       Never adopt a pre-existing capture, even if it uses M08's dedicated name. */
+    IF @recordedM08CaptureInstance = @m08CaptureInstance
+       AND EXISTS
        (
            SELECT 1
            FROM cdc.change_tables AS ct
@@ -111,11 +127,15 @@ BEGIN TRY
                ON cdcTable.object_id = OBJECT_ID(N'cdc.' + ct.capture_instance + N'_CT')
            WHERE ct.source_object_id = OBJECT_ID(N'catalog.Products')
              AND ct.capture_instance = @m08CaptureInstance
-             AND cdcTable.object_id = @m08CaptureTableObjectId
-             AND cdcTable.create_date = @m08CaptureTableCreatedAt
+             AND cdcTable.object_id = @recordedM08CaptureTableObjectId
+             AND cdcTable.create_date = @recordedM08CaptureTableCreatedAt
        )
     BEGIN
-        SET @m08CaptureInstance = NULL;
+        SET @m08CaptureTableObjectId = @recordedM08CaptureTableObjectId;
+        SET @m08CaptureTableCreatedAt = @recordedM08CaptureTableCreatedAt;
+    END
+    ELSE
+    BEGIN
         SET @m08CaptureTableObjectId = NULL;
         SET @m08CaptureTableCreatedAt = NULL;
     END;
@@ -126,22 +146,24 @@ BEGIN TRY
            SELECT 1
            FROM cdc.change_tables
            WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+             AND capture_instance = @m08CaptureInstance
        )
     BEGIN
         EXEC sys.sp_cdc_enable_table
             @source_schema = N'catalog',
             @source_name = N'Products',
             @role_name = NULL,
-            @supports_net_changes = 1;
+            @supports_net_changes = 1,
+            @capture_instance = @m08CaptureInstance;
 
         SELECT
-            @m08CaptureInstance = ct.capture_instance,
             @m08CaptureTableObjectId = cdcTable.object_id,
             @m08CaptureTableCreatedAt = cdcTable.create_date
         FROM cdc.change_tables AS ct
         INNER JOIN sys.objects AS cdcTable
             ON cdcTable.object_id = OBJECT_ID(N'cdc.' + ct.capture_instance + N'_CT')
-        WHERE ct.source_object_id = OBJECT_ID(N'catalog.Products');
+        WHERE ct.source_object_id = OBJECT_ID(N'catalog.Products')
+          AND ct.capture_instance = @m08CaptureInstance;
     END;
 
     IF EXISTS
@@ -149,18 +171,22 @@ BEGIN TRY
         SELECT 1
         FROM cdc.change_tables
         WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+          AND capture_instance = @m08CaptureInstance
     )
         SET @productCaptureEnabled = 1;
 
     SET @behavior =
         CASE
-            WHEN @productCaptureEnabled = 0 THEN N'CDC was not enabled for catalog.Products.'
+            WHEN @productCaptureEnabled = 0 THEN N'M08 did not enable its dedicated CDC capture for catalog.Products.'
             WHEN @engineEdition = 5 THEN N'Azure SQL Database manages CDC capture; no SQL Server Agent service is expected.'
             WHEN @sqlAgentAvailable = 1 THEN N'CDC capture is enabled and SQL Server Agent is running.'
             ELSE N'CDC metadata is enabled, but local capture/cleanup jobs wait until SQL Server Agent is available.'
         END;
 END TRY
 BEGIN CATCH
+    SET @m08CaptureTableObjectId = NULL;
+    SET @m08CaptureTableCreatedAt = NULL;
+    SET @productCaptureEnabled = 0;
     SET @behavior = CONCAT(N'CDC enablement was skipped: ', ERROR_MESSAGE());
 END CATCH;
 
@@ -186,11 +212,15 @@ VALUES
     @sqlAgentAvailable,
     @databaseCdcEnabledByModule,
     @productCaptureEnabled,
-    @m08CaptureInstance,
+    CASE WHEN @productCaptureEnabled = 1 THEN @m08CaptureInstance END,
     @m08CaptureTableObjectId,
     @m08CaptureTableCreatedAt,
     @behavior
 );
+
+EXEC sys.sp_releaseapplock
+    @Resource = N'DP800.M08.CdcOwnership',
+    @LockOwner = N'Session';
 GO
 
 CREATE OR ALTER VIEW api.Categories
