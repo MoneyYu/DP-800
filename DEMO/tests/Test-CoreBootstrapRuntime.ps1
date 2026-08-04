@@ -92,6 +92,7 @@ $expectedCounts = [ordered]@{
     'ops.DemoEnvironment'    = 1
     'ops.BootstrapSeedRegistry' = 1070
 }
+$mutationFixtureStarted = $false
 
 $originalPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
 $originalDpPassword = [Environment]::GetEnvironmentVariable('DP800_SQL_PASSWORD', 'Process')
@@ -177,6 +178,7 @@ SELECT CONCAT(
     # User-created rows receive adjacent identities, but are not bootstrap-owned.
     # A rerun must retain their native json documents exactly while enriching
     # only the deterministic records recorded in the ownership registry.
+    $mutationFixtureStarted = $true
     Invoke-Query -Database 'AdventureGearAI' -Query @"
 SET NOCOUNT ON;
 DECLARE @ProductID int;
@@ -324,10 +326,37 @@ if ($legacyJsonColumns -ne 0) {
     }
 }
 finally {
-    [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalPassword, 'Process')
-    [Environment]::SetEnvironmentVariable('DP800_SQL_PASSWORD', $originalDpPassword, 'Process')
-    $password = $null
-    [System.GC]::Collect()
+    try {
+        if ($mutationFixtureStarted) {
+            # The fixture changes data, schema, and seed ownership. Use the
+            # hard-scoped database reset rather than attempting row cleanup.
+            & pwsh -NoProfile -File $fullResetScript -Server $Server -User $User | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Post-fixture full reset exited non-zero.'
+            }
+
+            $canonicalCounts = [ordered]@{
+                'catalog.Products'    = 150
+                'customer.Customers'  = 120
+                'sales.Orders'        = 800
+            }
+            foreach ($table in $canonicalCounts.Keys) {
+                $actual = [int](Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT COUNT(*) FROM $table;")
+                if ($actual -ne $canonicalCounts[$table]) {
+                    Add-Failure "Post-fixture canonical row count for $table is $actual (expected $($canonicalCounts[$table]))."
+                }
+            }
+        }
+    }
+    catch {
+        Add-Failure "Post-fixture full reset failed: $($_.Exception.Message)"
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalPassword, 'Process')
+        [Environment]::SetEnvironmentVariable('DP800_SQL_PASSWORD', $originalDpPassword, 'Process')
+        $password = $null
+        [System.GC]::Collect()
+    }
 }
 
 if ($failures.Count -gt 0) {
