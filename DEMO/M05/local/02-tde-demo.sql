@@ -5,8 +5,8 @@
     exactly the temporary DP800_M05_TdeDemo database; AdventureGearAI is never
     encrypted or altered. The server certificate is removed during cleanup.
 
-    If master does not already have a database master key, provide a strong,
-    uncommitted TdeDemoMasterKeyPassword SQLCMD variable.
+    A pre-existing master database master key is required. This demo never
+    creates or drops server-wide cryptographic infrastructure.
     * 手動 Transparent Data Encryption 示範：只會建立及移除暫存的
       DP800_M05_TdeDemo 資料庫；絕不加密或變更 AdventureGearAI。伺服器憑證會在清除時移除。
 */
@@ -19,30 +19,53 @@ SET XACT_ABORT ON;
 DECLARE @DemoDatabase sysname = N'DP800_M05_TdeDemo';
 DECLARE @Certificate sysname = N'DP800_M05_TdeDemoCertificate';
 DECLARE @Sql nvarchar(max);
+DECLARE @OwnsDatabase bit = 0;
+DECLARE @OwnsCertificate bit = 0;
+DECLARE @DatabaseId int;
+DECLARE @OwnershipToken nvarchar(36) = CONVERT(nvarchar(36), NEWID());
+DECLARE @OwnershipMarkerPresent bit;
+DECLARE @CertificateThumbprint varbinary(32);
+DECLARE @AppLockResult int;
+DECLARE @AppLockHeld bit = 0;
 
 BEGIN TRY
+    EXEC @AppLockResult = sys.sp_getapplock
+        @Resource = N'DP800_M05_TdeDemo',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Session',
+        @LockTimeout = 0;
+
+    IF @AppLockResult < 0
+        THROW 51049, N'Another DP800 M05 TDE demo session is active. Try again after it completes.', 1;
+    SET @AppLockHeld = 1;
+
     IF DB_ID(@DemoDatabase) IS NOT NULL
         THROW 51050, N'DP800_M05_TdeDemo already exists. Remove only that prior temporary demo database before rerunning.', 1;
 
     IF EXISTS (SELECT 1 FROM sys.certificates WHERE name = @Certificate)
         THROW 51051, N'DP800_M05_TdeDemoCertificate already exists. Remove only that prior temporary demo certificate before rerunning.', 1;
 
-    /* A server certificate requires a master database master key. Existing
-       server configuration is reused; a newly created key is retained as
-       server cryptographic infrastructure rather than dropped by this demo. */
+    /* A server certificate requires a master database master key. Do not
+       create one: it is server-wide infrastructure outside this demo's scope. */
     IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = N'##MS_DatabaseMasterKey##')
-    BEGIN
-        IF N'$(TdeDemoMasterKeyPassword)' = N''
-            THROW 51052, N'TdeDemoMasterKeyPassword is required when master has no database master key.', 1;
-
-        CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'$(TdeDemoMasterKeyPassword)';
-    END;
+        THROW 51052, N'master requires an existing database master key before this TDE demo can run.', 1;
 
     CREATE CERTIFICATE DP800_M05_TdeDemoCertificate
     WITH SUBJECT = N'DP-800 M05 temporary TDE demonstration certificate';
+    SELECT @CertificateThumbprint = thumbprint
+    FROM sys.certificates
+    WHERE name = @Certificate;
+    SET @OwnsCertificate = 1;
 
     SET @Sql = N'CREATE DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
     EXEC (@Sql);
+    SET @DatabaseId = DB_ID(@DemoDatabase);
+    SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
+                 EXEC sys.sp_addextendedproperty
+                     @name = N''DP800_M05_TdeDemoOwnershipToken'',
+                     @value = @OwnershipToken;';
+    EXEC sys.sp_executesql @Sql, N'@OwnershipToken nvarchar(36)', @OwnershipToken = @OwnershipToken;
+    SET @OwnsDatabase = 1;
     SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
                  CREATE DATABASE ENCRYPTION KEY
                  WITH ALGORITHM = AES_256
@@ -60,23 +83,107 @@ BEGIN TRY
     INNER JOIN sys.dm_database_encryption_keys AS dek ON dek.database_id = d.database_id
     WHERE d.name = @DemoDatabase;
 
-    ALTER DATABASE [DP800_M05_TdeDemo] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE [DP800_M05_TdeDemo];
-    DROP CERTIFICATE DP800_M05_TdeDemoCertificate;
+    IF @OwnsDatabase = 1 AND DB_ID(@DemoDatabase) = @DatabaseId
+    BEGIN
+        SET @OwnershipMarkerPresent = 0;
+        SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
+                     SELECT @OwnershipMarkerPresent =
+                         CASE WHEN EXISTS
+                         (
+                             SELECT 1
+                             FROM sys.extended_properties
+                             WHERE class = 0
+                               AND name = N''DP800_M05_TdeDemoOwnershipToken''
+                               AND CONVERT(nvarchar(36), value) = @OwnershipToken
+                         ) THEN 1 ELSE 0 END;';
+        EXEC sys.sp_executesql
+            @Sql,
+            N'@OwnershipToken nvarchar(36), @OwnershipMarkerPresent bit OUTPUT',
+            @OwnershipToken = @OwnershipToken,
+            @OwnershipMarkerPresent = @OwnershipMarkerPresent OUTPUT;
+
+        IF @OwnershipMarkerPresent = 1
+        BEGIN
+            SET @Sql = N'ALTER DATABASE ' + QUOTENAME(@DemoDatabase) + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                         DROP DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
+            EXEC (@Sql);
+            SET @OwnsDatabase = 0;
+        END;
+    END;
+
+    IF @OwnsDatabase = 1
+        THROW 51053, N'Could not verify ownership of DP800_M05_TdeDemo; it was not removed.', 1;
+
+    IF @OwnsCertificate = 1
+       AND EXISTS
+       (
+           SELECT 1
+           FROM sys.certificates
+           WHERE name = @Certificate
+             AND thumbprint = @CertificateThumbprint
+       )
+    BEGIN
+        SET @Sql = N'DROP CERTIFICATE ' + QUOTENAME(@Certificate) + N';';
+        EXEC (@Sql);
+        SET @OwnsCertificate = 0;
+    END;
+
+    IF @OwnsCertificate = 1
+        THROW 51054, N'Could not verify ownership of DP800_M05_TdeDemoCertificate; it was not removed.', 1;
+
+    IF @AppLockHeld = 1
+        EXEC sys.sp_releaseapplock @Resource = N'DP800_M05_TdeDemo', @LockOwner = N'Session';
 
     PRINT N'M05 TDE demo verified and cleaned up DP800_M05_TdeDemo.';
 END TRY
 BEGIN CATCH
-    /* TRY/finally-style cleanup: only the exact temporary database and the
-       certificate created for it are candidates for removal. */
-    IF DB_ID(N'DP800_M05_TdeDemo') IS NOT NULL
+    /* Cleanup uses invocation-owned flags, so a failed preflight cannot
+       modify a database or certificate that existed before this run. */
+    IF @OwnsDatabase = 1 AND DB_ID(@DemoDatabase) = @DatabaseId
     BEGIN
-        ALTER DATABASE [DP800_M05_TdeDemo] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-        DROP DATABASE [DP800_M05_TdeDemo];
+        SET @OwnershipMarkerPresent = 0;
+        SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
+                     SELECT @OwnershipMarkerPresent =
+                         CASE WHEN EXISTS
+                         (
+                             SELECT 1
+                             FROM sys.extended_properties
+                             WHERE class = 0
+                               AND name = N''DP800_M05_TdeDemoOwnershipToken''
+                               AND CONVERT(nvarchar(36), value) = @OwnershipToken
+                         ) THEN 1 ELSE 0 END;';
+        EXEC sys.sp_executesql
+            @Sql,
+            N'@OwnershipToken nvarchar(36), @OwnershipMarkerPresent bit OUTPUT',
+            @OwnershipToken = @OwnershipToken,
+            @OwnershipMarkerPresent = @OwnershipMarkerPresent OUTPUT;
+
+        IF @OwnershipMarkerPresent = 1
+        BEGIN
+            SET @Sql = N'ALTER DATABASE ' + QUOTENAME(@DemoDatabase) + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                         DROP DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
+            EXEC (@Sql);
+            SET @OwnsDatabase = 0;
+        END;
     END;
 
-    IF EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'DP800_M05_TdeDemoCertificate')
-        DROP CERTIFICATE DP800_M05_TdeDemoCertificate;
+    IF @OwnsDatabase = 0
+       AND @OwnsCertificate = 1
+       AND EXISTS
+       (
+           SELECT 1
+           FROM sys.certificates
+           WHERE name = @Certificate
+             AND thumbprint = @CertificateThumbprint
+       )
+    BEGIN
+        SET @Sql = N'DROP CERTIFICATE ' + QUOTENAME(@Certificate) + N';';
+        EXEC (@Sql);
+        SET @OwnsCertificate = 0;
+    END;
+
+    IF @AppLockHeld = 1
+        EXEC sys.sp_releaseapplock @Resource = N'DP800_M05_TdeDemo', @LockOwner = N'Session';
 
     THROW;
 END CATCH;

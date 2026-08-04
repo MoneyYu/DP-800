@@ -14,6 +14,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $demoRoot = Join-Path $repoRoot 'DEMO'
 $database = 'AdventureGearAI'
 $tdeDatabase = 'DP800_M05_TdeDemo'
+$tdeCertificate = 'DP800_M05_TdeDemoCertificate'
 $failures = [System.Collections.Generic.List[string]]::new()
 
 function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
@@ -31,6 +32,13 @@ function Invoke-SqlScript {
     if ($LASTEXITCODE -ne 0) { throw "sqlcmd script failed for '$Path': $($result -join ' ')" }
     return ($result | Out-String)
 }
+function Invoke-SqlScriptExpectFailure {
+    param([string]$Database, [string]$Path)
+
+    $result = & $sqlcmd.Source -S $Server -U $User -d $Database -i $Path -h -1 -W -b -C -r 1 -f 65001 2>&1
+    if ($LASTEXITCODE -eq 0) { throw "sqlcmd script unexpectedly succeeded for '$Path': $($result -join ' ')" }
+    return ($result | Out-String)
+}
 function Get-Scalar {
     param([string]$Database, [string]$Query)
     return (Invoke-Query -Database $Database -Query $Query | Select-Object -First 1)
@@ -43,10 +51,8 @@ if ([string]::IsNullOrWhiteSpace($env:DP800_SQL_PASSWORD) -and [string]::IsNullO
     exit 0
 }
 $originalSqlcmdPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
-$originalTdeMasterKeyPassword = [Environment]::GetEnvironmentVariable('TdeDemoMasterKeyPassword', 'Process')
 $testPassword = if ($env:DP800_SQL_PASSWORD) { $env:DP800_SQL_PASSWORD } else { $env:SQLCMDPASSWORD }
 [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $testPassword, 'Process')
-[Environment]::SetEnvironmentVariable('TdeDemoMasterKeyPassword', $testPassword, 'Process')
 
 $bootstrap = Join-Path $demoRoot 'bootstrap\Invoke-Bootstrap.ps1'
 $m03Common = Join-Path $demoRoot 'M03\common\01-advanced-objects.sql'
@@ -55,6 +61,11 @@ $m05Common = Join-Path $demoRoot 'M05\common\01-security.sql'
 $m05Local = Join-Path $demoRoot 'M05\local\01-verify-security.sql'
 $m05Tde = Join-Path $demoRoot 'M05\local\02-tde-demo.sql'
 $m05Reset = Join-Path $demoRoot 'M05\reset\reset.sql'
+$createdTdeCollisionDatabase = $false
+$createdTdeCollisionCertificate = $false
+$masterKeyExistedBeforeTde = $false
+$masterKeyIdentityBeforeTde = $null
+$adventureGearEncryptionBeforeTde = $null
 
 try {
     # Bootstrap and execute the production scripts, rather than reproducing
@@ -135,12 +146,126 @@ REVERT;
         Add-Failure 'M05 manual TDE demo script is missing.'
     }
     else {
+        $masterKeyExistedBeforeTde = (Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM sys.symmetric_keys
+    WHERE name = N'##MS_DatabaseMasterKey##'
+) THEN N'YES' ELSE N'NO' END;
+"@) -eq 'YES'
+        $masterKeyIdentityBeforeTde = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONVERT(nvarchar(36), key_guid)
+FROM sys.symmetric_keys
+WHERE name = N'##MS_DatabaseMasterKey##';
+"@
+        $adventureGearEncryptionBeforeTde = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(d.is_encrypted, N':', ISNULL(CONVERT(nvarchar(10), dek.encryption_state), N'NULL'))
+FROM sys.databases AS d
+LEFT JOIN sys.dm_database_encryption_keys AS dek ON dek.database_id = d.database_id
+WHERE d.name = N'$database';
+"@
+
+        if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NOT NULL THEN N'YES' ELSE N'NO' END;
+"@) -eq 'YES' -or (Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeCertificate')
+            THEN N'YES' ELSE N'NO' END;
+"@) -eq 'YES') {
+            Add-Failure 'M05 TDE collision test requires no pre-existing DP800 TDE database or certificate.'
+        }
+        elseif (-not $masterKeyExistedBeforeTde) {
+            Add-Failure 'M05 TDE happy-path test requires a pre-existing master database master key; the demo must not create one.'
+        }
+        else {
+            Invoke-Query -Database 'master' -Query @"
+CREATE CERTIFICATE [$tdeCertificate]
+WITH SUBJECT = N'DP-800 M05 runtime collision fixture';
+"@ | Out-Null
+            $createdTdeCollisionCertificate = $true
+            Invoke-Query -Database 'master' -Query "CREATE DATABASE [$tdeDatabase];" | Out-Null
+            $createdTdeCollisionDatabase = $true
+            $collisionDatabaseIdentity = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(database_id, N':', CONVERT(nvarchar(33), create_date, 126), N':', is_encrypted)
+FROM sys.databases
+WHERE name = N'$tdeDatabase';
+"@
+            $collisionCertificateThumbprint = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONVERT(varchar(130), thumbprint, 1)
+FROM sys.certificates
+WHERE name = N'$tdeCertificate';
+"@
+
+            $collisionOutput = Invoke-SqlScriptExpectFailure -Database 'master' -Path $m05Tde
+            if ($collisionOutput -notmatch '51050|already exists') {
+                Add-Failure 'M05 TDE collision preflight did not report the existing database.'
+            }
+            if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN CONCAT(database_id, N':', CONVERT(nvarchar(33), create_date, 126), N':', is_encrypted) = N'$collisionDatabaseIdentity'
+            THEN N'PASS' ELSE N'FAIL' END
+FROM sys.databases
+WHERE name = N'$tdeDatabase';
+"@) -ne 'PASS') {
+                Add-Failure 'M05 TDE collision preflight altered or removed the existing database.'
+            }
+            if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN CONVERT(varchar(130), thumbprint, 1) = N'$collisionCertificateThumbprint'
+            THEN N'PASS' ELSE N'FAIL' END
+FROM sys.certificates
+WHERE name = N'$tdeCertificate';
+"@) -ne 'PASS') {
+                Add-Failure 'M05 TDE collision preflight altered or removed the existing certificate.'
+            }
+
+            Invoke-Query -Database 'master' -Query @"
+ALTER DATABASE [$tdeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+DROP DATABASE [$tdeDatabase];
+"@ | Out-Null
+            $createdTdeCollisionDatabase = $false
+            Invoke-Query -Database 'master' -Query "DROP CERTIFICATE [$tdeCertificate];" | Out-Null
+            $createdTdeCollisionCertificate = $false
+
         $tdeOutput = Invoke-SqlScript -Database 'master' -Path $m05Tde
         if ($tdeOutput -notmatch '(?s)DP800_M05_TdeDemo.*(?:ENCRYPTION_IN_PROGRESS|ENCRYPTED)') {
             Add-Failure 'M05 TDE demo did not return an encryption-state verification row.'
         }
         if ((Get-Scalar -Database 'master' -Query "SET NOCOUNT ON; SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NULL THEN N'PASS' ELSE N'FAIL' END;") -ne 'PASS') {
             Add-Failure "M05 TDE cleanup left $tdeDatabase behind."
+        }
+            if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sys.certificates WHERE name = N'$tdeCertificate')
+            THEN N'PASS' ELSE N'FAIL' END;
+"@) -ne 'PASS') {
+                Add-Failure "M05 TDE cleanup left $tdeCertificate behind."
+            }
+            if (-not $masterKeyExistedBeforeTde -or (Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CASE WHEN CONVERT(nvarchar(36), key_guid) = N'$masterKeyIdentityBeforeTde'
+            THEN N'PASS' ELSE N'FAIL' END
+FROM sys.symmetric_keys
+WHERE name = N'##MS_DatabaseMasterKey##';
+"@) -ne 'PASS') {
+                Add-Failure 'M05 TDE demo created or removed the master database master key.'
+            }
+            if ((Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(d.is_encrypted, N':', ISNULL(CONVERT(nvarchar(10), dek.encryption_state), N'NULL'))
+FROM sys.databases AS d
+LEFT JOIN sys.dm_database_encryption_keys AS dek ON dek.database_id = d.database_id
+WHERE d.name = N'$database';
+"@) -ne $adventureGearEncryptionBeforeTde) {
+                Add-Failure 'M05 TDE demo changed AdventureGearAI encryption state.'
+            }
         }
     }
 
@@ -161,20 +286,20 @@ catch {
     Add-Failure $_.Exception.Message
 }
 finally {
-    # The manual script has its own TRY/CATCH cleanup. This assertion and
-    # narrow fallback make a failed test unable to leave the exact demo DB.
+    # Collision fixtures are deleted only when this invocation created them.
     try {
-        Invoke-Query -Database 'master' -Query @"
-IF DB_ID(N'$tdeDatabase') IS NOT NULL
-BEGIN
-    ALTER DATABASE [$tdeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE [$tdeDatabase];
-END;
+        if ($createdTdeCollisionDatabase) {
+            Invoke-Query -Database 'master' -Query @"
+ALTER DATABASE [$tdeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+DROP DATABASE [$tdeDatabase];
 "@ | Out-Null
+        }
+        if ($createdTdeCollisionCertificate) {
+            Invoke-Query -Database 'master' -Query "DROP CERTIFICATE [$tdeCertificate];" | Out-Null
+        }
     }
     catch { Add-Failure "TDE test cleanup failed: $($_.Exception.Message)" }
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalSqlcmdPassword, 'Process')
-    [Environment]::SetEnvironmentVariable('TdeDemoMasterKeyPassword', $originalTdeMasterKeyPassword, 'Process')
     $testPassword = $null
 }
 
