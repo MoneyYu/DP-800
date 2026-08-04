@@ -1,4 +1,4 @@
-/*
+﻿/*
     M01 common/01-objects.sql
 
     Module 1 (Design and implement database objects) extensions for the unified
@@ -14,6 +14,7 @@
 
     The script is idempotent: every module-owned object is dropped (guarded) and
     recreated so the module can be re-run through the runner with -Force.
+    * 模組 1 的統一 AdventureGearAI 示範延伸物件：擴充 bootstrap 建立的標準核心，而不重建商務實體；建立時態價格、JSON 投影及索引、範圍分割訂單與 SQL 圖形。指令碼可等冪地以 -Force 重跑。
 */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -28,6 +29,7 @@ GO
 
 /* ---------------------------------------------------------------------------
    Idempotent teardown of module-owned objects (never the canonical core).
+   * 以等冪方式只清除本模組物件，絕不清除標準核心。
 --------------------------------------------------------------------------- */
 IF OBJECT_ID(N'catalog.ProductRelatedTo', N'U') IS NOT NULL DROP TABLE catalog.ProductRelatedTo;
 IF OBJECT_ID(N'catalog.ProductNode', N'U') IS NOT NULL DROP TABLE catalog.ProductNode;
@@ -54,6 +56,7 @@ GO
 
 /* ---------------------------------------------------------------------------
    1) System-versioned temporal price table sourced from canonical products.
+   * 從標準產品建立系統版本控制的時態價格資料表。
 --------------------------------------------------------------------------- */
 CREATE TABLE catalog.ProductPrice
 (
@@ -77,7 +80,9 @@ WITH
 INSERT catalog.ProductPrice (ProductID, CurrentPrice)
 SELECT ProductID, UnitPrice FROM catalog.Products;
 
-/* Generate a history row so FOR SYSTEM_TIME ALL returns more than one version. */
+/* Generate a history row so FOR SYSTEM_TIME ALL returns more than one version.
+    * 建立歷程資料列，使 FOR SYSTEM_TIME ALL 傳回多個版本。
+*/
 UPDATE catalog.ProductPrice
 SET CurrentPrice = CurrentPrice * 0.95
 WHERE ProductID = 1;
@@ -85,6 +90,7 @@ GO
 
 /* ---------------------------------------------------------------------------
    2) Indexed computed JSON projection over the canonical ProductMetadata.
+   * 在標準 ProductMetadata 上建立已建立索引的計算式 JSON 投影。
 --------------------------------------------------------------------------- */
 ALTER TABLE catalog.Products
 ADD MetadataFrame AS CONVERT(nvarchar(50), JSON_VALUE(ProductMetadata, '$.frame'));
@@ -98,6 +104,7 @@ GO
    3) Range-partitioned order teaching object (separate from canonical orders).
       Seeded with realistic customer names across 2026 quarters so the partition
       distribution is visible.
+   * 建立與標準訂單分離的範圍分割教學物件，並以 2026 年各季資料植入以顯示分割分布。
 --------------------------------------------------------------------------- */
 CREATE PARTITION FUNCTION PF_AdventureGear_OrderDate(date)
 AS RANGE RIGHT FOR VALUES ('2026-01-01', '2026-04-01', '2026-07-01', '2026-10-01');
@@ -124,6 +131,7 @@ GO
 
 /* ---------------------------------------------------------------------------
    4) SQL graph node/edge modelling product complements.
+   * 以 SQL 圖形節點與邊模擬產品互補關係。
 --------------------------------------------------------------------------- */
 CREATE TABLE catalog.ProductNode
 (
@@ -139,7 +147,9 @@ CREATE TABLE catalog.ProductRelatedTo
 INSERT catalog.ProductNode (ProductID, ProductName)
 SELECT ProductID, ProductName FROM catalog.Products;
 
-/* The Trailblazer 29 bike (ProductID 1) complements a tire, a light, and a pack. */
+/* The Trailblazer 29 bike (ProductID 1) complements a tire, a light, and a pack.
+    * Trailblazer 29 自行車（ProductID 1）與輪胎、車燈及背包互補。
+*/
 INSERT catalog.ProductRelatedTo ($from_id, $to_id, RelationshipType)
 SELECT sourceNode.$node_id, targetNode.$node_id, N'complements'
 FROM catalog.ProductNode AS sourceNode

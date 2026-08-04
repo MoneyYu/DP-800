@@ -1,4 +1,4 @@
-/*
+﻿/*
     M05 common/01-security.sql
 
     Module 5 (Data security and compliance) for AdventureGearAI. The security demo
@@ -12,6 +12,7 @@
     (guarded) and recreated, and the projection is re-seeded from the canonical
     customers on every run. The demo users are unique to this module and are
     reset (dropped/recreated) each run.
+    * 模組 5 的 AdventureGearAI 安全性與合規性示範建立 security.SecureCustomers 伴隨投影、動態資料遮罩與資料列層級安全性；不會取代標準 customer.Customers，且每次執行均會重建本模組物件。
 */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -26,6 +27,7 @@ GO
 
 /* Secured companion projection of the canonical customers. The demo-only
    GovernmentID / CreditLimit columns exist so masking functions have a column to
+   * 建立標準客戶的安全伴隨投影，示範專用敏感欄位由 CustomerID 決定性產生。
    bind to; they are synthesized deterministically from the canonical CustomerID. */
 CREATE TABLE security.SecureCustomers
 (
@@ -53,13 +55,17 @@ SELECT
 FROM customer.Customers AS c;
 GO
 
-/* Contained users unique to this module (no server login), reset each run. */
+/* Contained users unique to this module (no server login), reset each run.
+    * 建立本模組專屬、沒有伺服器登入的內含使用者，並於每次執行時重設。
+*/
 CREATE USER AdventureGearMaskedReader WITHOUT LOGIN;
 CREATE USER AdventureGearWestReader WITHOUT LOGIN;
 GRANT SELECT ON security.SecureCustomers TO AdventureGearMaskedReader, AdventureGearWestReader;
 GO
 
-/* Row-Level Security predicate: the West reader only sees West-region rows. */
+/* Row-Level Security predicate: the West reader only sees West-region rows.
+    * 資料列層級安全性述詞讓 West 讀取者只看到 West 區域資料列。
+*/
 CREATE OR ALTER FUNCTION security.fn_RegionFilter(@SalesRegion nvarchar(20))
 RETURNS TABLE
 WITH SCHEMABINDING

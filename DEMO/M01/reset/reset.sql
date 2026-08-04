@@ -1,4 +1,4 @@
-/*
+﻿/*
     M01 reset/reset.sql
 
     Module-scoped reset for the unified AdventureGearAI demo. It NEVER drops a
@@ -21,6 +21,7 @@
     Intended to run against AdventureGearAI via DEMO/scripts/Invoke-Dp800Sql.ps1,
     which executes the read-only Assert-DemoDatabase.sql guard first. The inline
     guard below is defence-in-depth for direct execution.
+    * 統一 AdventureGearAI 示範的模組範圍重設：絕不刪除資料庫；只移除模組 1 擁有的物件，並將 M01 與其相依模組重設為 NotStarted，保留 bootstrap 建立的標準核心。
 */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -28,7 +29,9 @@ SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
 
-/* Guard 1: refuse to run against anything but AdventureGearAI. */
+/* Guard 1: refuse to run against anything but AdventureGearAI.
+    * 保護條件 1：拒絕在 AdventureGearAI 以外的資料庫執行。
+*/
 IF DB_NAME() <> N'AdventureGearAI'
 BEGIN
     DECLARE @db sysname = DB_NAME();
@@ -37,7 +40,9 @@ BEGIN
 END;
 GO
 
-/* Guard 2: refuse to run without a valid AdventureGearAI environment marker. */
+/* Guard 2: refuse to run without a valid AdventureGearAI environment marker.
+    * 保護條件 2：沒有有效的 AdventureGearAI 環境標記時拒絕執行。
+*/
 IF OBJECT_ID(N'ops.DemoEnvironment', N'U') IS NULL
    OR NOT EXISTS (SELECT 1 FROM ops.DemoEnvironment WHERE DemoEnvironmentID = 1 AND DatabaseName = N'AdventureGearAI')
 BEGIN
@@ -49,6 +54,7 @@ GO
 /* ---------------------------------------------------------------------------
    Teardown module-owned objects only (dependency-safe order). The canonical
    catalog.Products/catalog.Categories/sales.* core is never dropped.
+   * 只依相依安全順序清除模組擁有的物件；標準核心不會被刪除。
 --------------------------------------------------------------------------- */
 IF OBJECT_ID(N'catalog.ProductRelatedTo', N'U') IS NOT NULL DROP TABLE catalog.ProductRelatedTo;
 IF OBJECT_ID(N'catalog.ProductNode', N'U') IS NOT NULL DROP TABLE catalog.ProductNode;
@@ -75,6 +81,7 @@ GO
 
 /* ---------------------------------------------------------------------------
    State reset: M01 and every dependent module (M02..M11) become NotStarted.
+   * 狀態重設僅影響註解中指定的模組及其相依模組。
 --------------------------------------------------------------------------- */
 UPDATE ops.DemoModuleState
 SET Status = N'NotStarted',

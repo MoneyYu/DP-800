@@ -1,4 +1,4 @@
-/*
+﻿/*
     M03 common/01-advanced-objects.sql
 
     Module 3 (Write advanced T-SQL) teaching objects for AdventureGearAI. The
@@ -8,6 +8,7 @@
     object with the canonical catalog/customer core.
 
     Idempotent: guarded drops recreate the module-owned objects on every run.
+    * 模組 3 的 AdventureGearAI 進階 T-SQL 教學物件，使用 ops 結構描述中的自足組織圖；每次執行都會受保護地重建本模組物件。
 */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
