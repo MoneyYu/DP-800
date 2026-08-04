@@ -456,6 +456,16 @@ Test-CommandSet -EnglishPath 'single-command English fixture' -LocalizedPath 'si
     -EnglishText 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI' `
     -LocalizedText 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI'
 
+$singletonParityFailureStart = $failures.Count
+Test-CommandSet -EnglishPath 'single-command English mismatch fixture' -LocalizedPath 'single-command zh-TW mismatch fixture' `
+    -EnglishText 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI' `
+    -LocalizedText 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI -Force'
+$singletonParityFailures = @($failures.GetRange($singletonParityFailureStart, $failures.Count - $singletonParityFailureStart))
+$failures.RemoveRange($singletonParityFailureStart, $failures.Count - $singletonParityFailureStart)
+if (-not ($singletonParityFailures -like '* is missing the exact runnable command from *')) {
+    Add-Failure 'Command parity fixture does not reject a singleton command with appended arguments.'
+}
+
 foreach ($fixture in $standardWrapperVariants) {
     $adventureGearCommand = $fixture.Command -replace '(?i)-D master$', '-Database AdventureGearAI'
     Test-CommandSet -EnglishPath 'English fixture' -LocalizedPath "$($fixture.Name) fixture" `
