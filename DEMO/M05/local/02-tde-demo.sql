@@ -1,4 +1,4 @@
-/*
+﻿/*
     M05 local/02-tde-demo.sql
 
     Manual Transparent Data Encryption demonstration. It creates and removes
