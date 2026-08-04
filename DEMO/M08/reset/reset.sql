@@ -141,9 +141,15 @@ BEGIN TRY
     END;
 
     DROP TABLE IF EXISTS api.CdcRuntimeStatus;
+    DROP PROCEDURE IF EXISTS api.GetProductsByCategory;
+    DROP VIEW IF EXISTS api.InventoryAvailability;
+    DROP VIEW IF EXISTS api.ProductCatalog;
+    DROP VIEW IF EXISTS api.Products;
+    DROP VIEW IF EXISTS api.Categories;
 
     /* M08 has no downstream module dependents. Keep the module state transition
-       under the ownership lock so a concurrent setup cannot be overwritten. */
+       under the ownership lock until every owned API object is removed, so a
+       concurrent setup cannot observe or overwrite partial teardown state. */
     UPDATE ops.DemoModuleState
     SET Status = N'NotStarted',
         StartedAtUtc = NULL,
@@ -166,13 +172,6 @@ IF @AppLockHeld = 1
     EXEC sys.sp_releaseapplock
         @Resource = N'DP800.M08.CdcOwnership',
         @LockOwner = N'Session';
-GO
-
-DROP PROCEDURE IF EXISTS api.GetProductsByCategory;
-DROP VIEW IF EXISTS api.InventoryAvailability;
-DROP VIEW IF EXISTS api.ProductCatalog;
-DROP VIEW IF EXISTS api.Products;
-DROP VIEW IF EXISTS api.Categories;
 GO
 
 SET NOEXEC OFF;

@@ -99,9 +99,13 @@ Assert-True ($m08SetupFinalStatusRead -ge 0 -and $m08SetupFinalLockRelease -gt $
 
 $m08ResetStatusDrop = Get-SourceIndex $m08Reset 'DROP TABLE IF EXISTS api.CdcRuntimeStatus'
 $m08ResetStateUpdate = Get-SourceIndex $m08Reset 'UPDATE ops.DemoModuleState'
+$m08ResetFinalApiDrop = Get-SourceIndex $m08Reset 'DROP VIEW IF EXISTS api.Categories'
+$m08ResetCatch = Get-SourceIndex $m08Reset 'BEGIN CATCH'
 $m08ResetFinalLockRelease = Get-SourceIndex $m08Reset 'EXEC sys.sp_releaseapplock' -Last
 Assert-True ($m08ResetStatusDrop -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetStatusDrop) 'M08 reset must release the CDC ownership lock only after deleting CdcRuntimeStatus.'
 Assert-True ($m08ResetStateUpdate -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetStateUpdate) 'M08 reset must keep the CDC ownership lock through the M08 module state update.'
+Assert-True ($m08ResetFinalApiDrop -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetFinalApiDrop) 'M08 reset must release the CDC ownership lock only after its final API teardown operation.'
+Assert-True ($m08ResetCatch -gt $m08ResetFinalApiDrop -and $m08ResetFinalLockRelease -gt $m08ResetCatch) 'M08 reset must catch API teardown failures and release the CDC ownership lock.'
 
 $dab = $null
 if ($null -ne $dabConfig) {
