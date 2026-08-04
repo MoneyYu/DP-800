@@ -107,6 +107,7 @@ try {
         'Test-UnifiedDemoResetsRuntime.ps1'
         'Test-UnifiedDemoProductionFlowRuntime.ps1'
         'Test-UnifiedDemoM06ConcurrencyRuntime.ps1'
+        'Test-DabIntegrationRuntime.ps1'
         'Test-DemoLocalizationRuntime.ps1'
     )
 
