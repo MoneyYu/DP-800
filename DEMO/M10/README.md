@@ -1,5 +1,7 @@
 # M10 — Full-text, vector, and hybrid search
 
+English | [繁體中文](README.zh-TW.md)
+
 Provision and run search against **AdventureGearAI** with the unified runner:
 
 ```powershell

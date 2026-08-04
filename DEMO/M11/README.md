@@ -1,5 +1,7 @@
 # M11 — RAG with SQL
 
+English | [繁體中文](README.zh-TW.md)
+
 Provision and run the local RAG path against **AdventureGearAI** with the unified runner:
 
 ```powershell

@@ -1,5 +1,7 @@
 # Azure notes
 
+English | [繁體中文](README.zh-TW.md)
+
 Run this module's setup against an Azure SQL database that hosts the
 AdventureGearAI schema set. Temporal tables, indexed computed JSON columns,
 range partitioning, and SQL graph node/edge tables are all available on Azure

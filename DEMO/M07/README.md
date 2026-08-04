@@ -1,5 +1,7 @@
 # M07 — CI/CD with SQL database projects
 
+English | [繁體中文](README.zh-TW.md)
+
 `common/Dp800.Database` is an SDK-style SQL project (object-per-file, organized
 into `catalog`/`ops` schema folders) that builds a dacpac targeting the unified
 **AdventureGearAI** database. `DP800.publish.xml` is a passwordless Entra publish

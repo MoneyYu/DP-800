@@ -1,5 +1,7 @@
 # M04 — AI-assisted SQL workflow
 
+English | [繁體中文](README.zh-TW.md)
+
 This module does not call a Copilot API and creates no new database objects. It
 provides a reviewable instruction example plus a before/after query pair that run
 against the canonical **AdventureGearAI** sales/customer core.

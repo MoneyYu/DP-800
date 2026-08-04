@@ -1,5 +1,7 @@
 # Azure notes
 
+English | [繁體中文](README.zh-TW.md)
+
 The workload, Query Store, plans, and DMVs are portable to the AdventureGearAI
 database on Azure SQL. Azure SQL Database defaults and available replicas depend
 on the service tier. Query Performance Insight, automatic tuning, DTU/vCore

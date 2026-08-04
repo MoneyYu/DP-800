@@ -1,5 +1,7 @@
 # Azure workflow
 
+English | [繁體中文](README.zh-TW.md)
+
 Use an approved GitHub Copilot, SSMS, VS Code, or Fabric Copilot experience with
 organizational data controls against the AdventureGearAI database on Azure SQL.
 Connect with Entra identity where possible, keep credentials outside prompts,

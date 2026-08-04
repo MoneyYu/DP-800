@@ -1,5 +1,7 @@
 # M01 — Design and implement database objects
 
+English | [繁體中文](README.zh-TW.md)
+
 Module 1 extends the canonical **AdventureGearAI** commerce core (`catalog`,
 `sales`, `customer`) with the object types covered by the module. It does not
 recreate the core `catalog.Products` / `sales.Orders` entities.

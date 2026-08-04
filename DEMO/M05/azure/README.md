@@ -1,5 +1,7 @@
 # Azure notes
 
+English | [繁體中文](README.zh-TW.md)
+
 - Azure SQL Database enables TDE by default and manages the service-side
   protection for the AdventureGearAI database; customer-managed keys require Azure
   Key Vault configuration.

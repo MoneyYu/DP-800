@@ -16,10 +16,8 @@ function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
 Write-Host 'Traditional Chinese SQL encoding runtime regression harness'
 Write-Host ''
 
-# This runtime test intentionally proves two independent conditions: the local
-# sqlcmd environment can round-trip UTF-8 Chinese text with -f 65001, and the
-# production wrapper has adopted that flag. The direct smoke can pass before the
-# wrapper assertion is fixed in the subsequent production task.
+# This runtime test proves that both sqlcmd and the production wrapper can
+# round-trip UTF-8 Chinese text from a no-BOM SQL file.
 $sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
 $docker = Get-Command docker -ErrorAction SilentlyContinue
 if (-not $sqlcmd) { Add-Failure 'Required local environment is missing: sqlcmd is not on PATH.' }
@@ -42,7 +40,7 @@ try {
                 Add-Failure "Required local environment is missing: MSSQL_SA_PASSWORD is not set in '$Container'."
             }
             else {
-                $temporaryScript = Join-Path $PSScriptRoot ('.localization-runtime-{0}.sql' -f [guid]::NewGuid().ToString('N'))
+                $temporaryScript = Join-Path $repoRoot ('.localization-runtime-{0}.sql' -f [guid]::NewGuid().ToString('N'))
                 $sql = @"
 -- English localization encoding regression comment
 -- 繁體中文註解：確認 UTF-8 SQL 指令碼。
@@ -51,7 +49,7 @@ SELECT N'繁中字串測試' AS LocalizationProbe;
                 [System.IO.File]::WriteAllText(
                     $temporaryScript,
                     $sql,
-                    [System.Text.UTF8Encoding]::new($true))
+                    [System.Text.UTF8Encoding]::new($false))
 
                 [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
                 $output = & $sqlcmd.Source -S $Server -U $User -d master -i $temporaryScript -f 65001 -b -r 1 -C -h -1 -W 2>&1 | Out-String
@@ -66,6 +64,17 @@ SELECT N'繁中字串測試' AS LocalizationProbe;
                 }
                 if ($output -match 'ç¹|ä¸') {
                     Add-Failure 'Direct sqlcmd UTF-8 smoke output contains known mojibake.'
+                }
+
+                $wrapperOutput = & $sqlWrapper -InputFile $temporaryScript -Database master -Server $Server -User $User 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    Add-Failure "Invoke-Dp800Sql UTF-8 no-BOM smoke failed with exit $LASTEXITCODE."
+                }
+                elseif ($wrapperOutput -notmatch [regex]::Escape('繁中字串測試')) {
+                    Add-Failure 'Invoke-Dp800Sql UTF-8 no-BOM smoke did not return the exact Chinese literal.'
+                }
+                elseif ($wrapperOutput -match 'ç¹|ä¸') {
+                    Add-Failure 'Invoke-Dp800Sql UTF-8 no-BOM smoke output contains known mojibake.'
                 }
             }
         }

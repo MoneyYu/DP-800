@@ -496,6 +496,42 @@ function Test-SqlHanUsage {
     }
 }
 
+function Test-EnglishLanguageSwitch {
+    param(
+        [string]$Path,
+        [string]$Text
+    )
+
+    $lines = $Text -split "`r?`n"
+    $firstMeaningfulIndex = -1
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if (-not [string]::IsNullOrWhiteSpace($lines[$index])) {
+            $firstMeaningfulIndex = $index
+            break
+        }
+    }
+
+    if ($firstMeaningfulIndex -lt 0) {
+        Add-Failure "$(Resolve-RepoPath $Path) is empty and cannot contain a language-switch link."
+        return
+    }
+
+    $languageSwitchIndex = $firstMeaningfulIndex
+    if ($lines[$firstMeaningfulIndex] -match '^#\s+') {
+        $languageSwitchIndex++
+        while ($languageSwitchIndex -lt $lines.Count -and
+            [string]::IsNullOrWhiteSpace($lines[$languageSwitchIndex])) {
+            $languageSwitchIndex++
+        }
+    }
+
+    $expectedLanguageSwitch = 'English | [繁體中文](README.zh-TW.md)'
+    if ($languageSwitchIndex -ge $lines.Count -or
+        $lines[$languageSwitchIndex] -cne $expectedLanguageSwitch) {
+        Add-Failure "$(Resolve-RepoPath $Path) must place '$expectedLanguageSwitch' after its H1 heading or as its first meaningful content."
+    }
+}
+
 Write-Host 'Traditional Chinese demo localization regression harness'
 Write-Host "Repository root: $repoRoot"
 Write-Host ''
@@ -532,18 +568,18 @@ if (-not @($allEnglishCommands | Where-Object { $_ -match '(?i)-Database\s+Adven
 foreach ($englishReadme in $englishReadmes) {
     $localizedPath = Join-Path $englishReadme.DirectoryName 'README.zh-TW.md'
     $englishRelativePath = Resolve-RepoPath $englishReadme.FullName
+    $englishText = Get-DocumentText -Path $englishReadme.FullName
+    if ($null -eq $englishText) { continue }
+    Test-EnglishLanguageSwitch -Path $englishReadme.FullName -Text $englishText
+
     if (-not (Test-Path -LiteralPath $localizedPath -PathType Leaf)) {
         Add-Failure "Missing Traditional Chinese sibling for ${englishRelativePath}: $(Resolve-RepoPath $localizedPath)"
         continue
     }
 
     $localizedText = Get-DocumentText -Path $localizedPath
-    $englishText = Get-DocumentText -Path $englishReadme.FullName
-    if ($null -eq $englishText -or $null -eq $localizedText) { continue }
+    if ($null -eq $localizedText) { continue }
 
-    if (-not $englishText.Contains('[繁體中文](README.zh-TW.md)')) {
-        Add-Failure "$englishRelativePath is missing the required [繁體中文](README.zh-TW.md) language-switch link."
-    }
     if (-not $localizedText.Contains('[English](README.md)')) {
         Add-Failure "$(Resolve-RepoPath $localizedPath) is missing the required [English](README.md) language-switch link."
     }

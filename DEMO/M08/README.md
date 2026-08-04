@@ -1,5 +1,7 @@
 # M08 — Integrate SQL with Azure services
 
+English | [繁體中文](README.zh-TW.md)
+
 Provision the API surface against **AdventureGearAI** with the unified runner:
 
 ```powershell

@@ -1,5 +1,7 @@
 # M05 — Data security and compliance
 
+English | [繁體中文](README.zh-TW.md)
+
 Module 5 demonstrates data-protection features on the canonical **AdventureGearAI**
 customer data. It does not replace `customer.Customers`; it provisions a secured
 companion projection (`security.SecureCustomers`) that carries the demo-only

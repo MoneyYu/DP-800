@@ -51,13 +51,13 @@ try {
         if (-not (Test-Path -LiteralPath $databaseGuard -PathType Leaf)) {
             throw "Database guard script is missing: $databaseGuard"
         }
-        & $sqlcmd.Source -S $Server -U $User -d $Database -i $databaseGuard -b -r 1 -C
+        & $sqlcmd.Source -S $Server -U $User -d $Database -i $databaseGuard -f 65001 -b -r 1 -C
         if ($LASTEXITCODE -ne 0) {
             throw "Database guard failed for target '$Database'; refusing to run $resolvedInput."
         }
     }
 
-    & $sqlcmd.Source -S $Server -U $User -d $Database -i $resolvedInput -b -r 1 -C
+    & $sqlcmd.Source -S $Server -U $User -d $Database -i $resolvedInput -f 65001 -b -r 1 -C
     if ($LASTEXITCODE -ne 0) {
         throw "sqlcmd failed with exit code $LASTEXITCODE while running $resolvedInput."
     }

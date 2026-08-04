@@ -1,5 +1,7 @@
 # DP-800 trainer demos — the AdventureGearAI course flow
 
+English | [繁體中文](README.zh-TW.md)
+
 This folder is a compact, resettable trainer path aligned to the 11 DP-800
 modules. Every module now teaches against **one** database, literally named
 `AdventureGearAI`, instead of eleven isolated `DP800_Mxx` databases. Local SQL
