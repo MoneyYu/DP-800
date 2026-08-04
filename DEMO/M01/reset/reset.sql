@@ -72,6 +72,7 @@ DECLARE @M08CaptureTableCreatedAt datetime;
 DECLARE @ExpectedM08CaptureInstance sysname = N'AdventureGearM08Products';
 DECLARE @M08CaptureExists bit = 0;
 DECLARE @RemainingCaptureCount int = 0;
+DECLARE @ExternallyOwnedCdcRemainsEnabled bit = 0;
 DECLARE @CdcOwnershipLockResult int;
 DECLARE @CdcOwnershipLockHeld bit = 0;
 
@@ -144,7 +145,7 @@ BEGIN TRY
     END;
 
     IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
-        THROW 51084, 'M01 reset cannot remove its memory-optimized table while externally owned CDC remains enabled.', 1;
+        SET @ExternallyOwnedCdcRemainsEnabled = 1;
 
 IF OBJECT_ID(N'catalog.ProductRelatedTo', N'U') IS NOT NULL DROP TABLE catalog.ProductRelatedTo;
 IF OBJECT_ID(N'catalog.ProductNode', N'U') IS NOT NULL DROP TABLE catalog.ProductNode;
@@ -176,7 +177,8 @@ IF EXISTS (SELECT 1 FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.
     DROP INDEX IX_Products_ProductMetadata ON catalog.Products;
 DROP TABLE IF EXISTS catalog.ProductJsonTeaching;
 
-DROP TABLE IF EXISTS catalog.ProductCacheInMemory;
+IF @ExternallyOwnedCdcRemainsEnabled = 0
+    DROP TABLE IF EXISTS catalog.ProductCacheInMemory;
 
 /* Dropping an updatable ledger can retain an engine-managed dropped-ledger
    system table for verification. It is intentional and must not be removed.
@@ -212,6 +214,9 @@ SET Status = N'NotStarted',
     ErrorLine = NULL,
     UpdatedAtUtc = SYSUTCDATETIME()
 WHERE ModuleNumber IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+
+IF @ExternallyOwnedCdcRemainsEnabled = 1
+    PRINT N'M01 reset partial: In-Memory OLTP teardown skipped because externally owned CDC remains enabled; existing cache and filegroup were preserved.';
 
 IF @CdcOwnershipLockHeld = 1
 BEGIN

@@ -77,6 +77,7 @@ function Invoke-M01Reset {
     if ($LASTEXITCODE -ne 0) {
         throw "Repository SQL wrapper failed for M01 reset. $($output -join ' ')"
     }
+    return ($output -join [Environment]::NewLine)
 }
 function Invoke-M01Runner {
     param([switch]$Force)
@@ -92,6 +93,33 @@ function Invoke-M08Setup {
     if ($LASTEXITCODE -ne 0) {
         throw "Repository SQL wrapper failed for M08 setup. $($output -join ' ')"
     }
+}
+function Get-CaptureFingerprint {
+    param([string]$CaptureInstance)
+    return Get-Scalar @"
+SELECT CONCAT(
+    ct.capture_instance, N'|',
+    CONVERT(nvarchar(20), ct.source_object_id), N'|',
+    CONVERT(nvarchar(20), cdcTable.object_id), N'|',
+    CONVERT(nvarchar(30), cdcTable.create_date, 126))
+FROM cdc.change_tables AS ct
+JOIN sys.objects AS cdcTable
+    ON cdcTable.object_id = OBJECT_ID(N'cdc.' + ct.capture_instance + N'_CT')
+WHERE ct.capture_instance = N'$CaptureInstance';
+"@
+}
+function Get-M01CacheFingerprint {
+    return Get-Scalar @"
+IF OBJECT_ID(N'catalog.ProductCacheInMemory', N'U') IS NULL
+    SELECT N'absent|0|null';
+ELSE
+    EXEC sys.sp_executesql N'
+        SELECT CONCAT(
+            CONVERT(nvarchar(20), OBJECT_ID(N''catalog.ProductCacheInMemory'')), N''|'',
+            CONVERT(nvarchar(20), COUNT(*)), N''|'',
+            ISNULL(CONVERT(nvarchar(20), CHECKSUM_AGG(BINARY_CHECKSUM(ProductID, ProductName, CachedAtUtc))), N''null''))
+        FROM catalog.ProductCacheInMemory;';
+"@
 }
 
 $m01Objects = Get-Source 'DEMO\M01\common\01-objects.sql'
@@ -142,6 +170,9 @@ Write-Host ''
 
 $originalSqlCmdPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
 $originalDpPassword = [Environment]::GetEnvironmentVariable('DP800_SQL_PASSWORD', 'Process')
+$foreignCaptureInstance = 'DP800M01ForeignTest'
+$foreignCaptureCreated = $false
+$foreignDatabaseCdcEnabledByTest = $false
 try {
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     [Environment]::SetEnvironmentVariable('DP800_SQL_PASSWORD', $password, 'Process')
@@ -255,11 +286,98 @@ SELECT CASE WHEN EXISTS
     Invoke-M01Runner | Out-Null
     Assert-Scalar -Label 'M01 reapply ledger' -Expected '1' -Actual `
         (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'ops.InventoryLedger') AND ledger_type = 2;")
+
+    # Externally-owned CDC blocks memory-optimized DDL. M01 must preserve both
+    # that capture and an existing cache while completing its remaining lessons.
+    $foreignCaptureAlreadyExists = Get-Scalar @"
+IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+    SELECT COUNT(*) FROM cdc.change_tables WHERE capture_instance = N'$foreignCaptureInstance';
+ELSE
+    SELECT 0;
+"@
+    if ($foreignCaptureAlreadyExists -ne '0') {
+        throw "The test-owned foreign CDC capture '$foreignCaptureInstance' already exists; refusing to alter it."
+    }
+    $foreignDatabaseCdcEnabledByTest = (Get-Scalar "SELECT CONVERT(varchar(1), is_cdc_enabled) FROM sys.databases WHERE database_id = DB_ID();") -eq '0'
+    if ($foreignDatabaseCdcEnabledByTest) {
+        Invoke-Query -Query 'EXEC sys.sp_cdc_enable_db;' | Out-Null
+    }
+    Invoke-Query -Query @"
+EXEC sys.sp_cdc_enable_table
+    @source_schema = N'catalog',
+    @source_name = N'Products',
+    @role_name = NULL,
+    @capture_instance = N'$foreignCaptureInstance';
+"@ | Out-Null
+    $foreignCaptureCreated = $true
+
+    $foreignCaptureBefore = Get-CaptureFingerprint -CaptureInstance $foreignCaptureInstance
+    $cacheBefore = Get-M01CacheFingerprint
+    $foreignRunOutput = Invoke-M01Runner -Force
+    if ($foreignRunOutput -notmatch 'M01 In-Memory OLTP skipped: externally owned CDC remains enabled') {
+        Add-Failure "M01 foreign-CDC reapply must report the explicit XTP skip reason. Output: $foreignRunOutput"
+    }
+    Assert-Scalar -Label 'Foreign CDC capture unchanged after M01 runner' -Expected $foreignCaptureBefore -Actual `
+        (Get-CaptureFingerprint -CaptureInstance $foreignCaptureInstance)
+    Assert-Scalar -Label 'M01 cache unchanged under foreign CDC' -Expected $cacheBefore -Actual (Get-M01CacheFingerprint)
+    Assert-Scalar -Label 'M01 foreign-CDC runner status' -Expected 'Completed' -Actual `
+        (Get-Scalar 'SELECT Status FROM ops.DemoModuleState WHERE ModuleNumber = 1;')
+    Assert-Scalar -Label 'M01 foreign-CDC ledger' -Expected '1' -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'ops.InventoryLedger') AND ledger_type = 2;")
+    Assert-Scalar -Label 'M01 foreign-CDC JSON teaching table' -Expected '1' -Actual `
+        (Get-Scalar 'SELECT COUNT(*) FROM catalog.ProductJsonTeaching;')
+    Assert-Scalar -Label 'M01 foreign-CDC sequence results' -Expected '2' -Actual `
+        (Get-Scalar 'SELECT COUNT(*) FROM catalog.ProductSkuSequenceDemo;')
+    Assert-Scalar -Label 'M01 foreign-CDC constraint results' -Expected '4' -Actual `
+        (Get-Scalar 'SELECT COUNT(*) FROM catalog.ProductConstraintViolationLog;')
+    $expectedExternalMetadata = if ($polyBaseInstalled -eq '1') { '1' } else { '0' }
+    Assert-Scalar -Label 'M01 foreign-CDC external metadata' -Expected $expectedExternalMetadata -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.external_tables WHERE object_id = OBJECT_ID(N'catalog.ProductMetadataExternal');")
+
+    $foreignResetOutput = Invoke-M01Reset
+    if ($foreignResetOutput -notmatch 'M01 reset partial: In-Memory OLTP teardown skipped because externally owned CDC remains enabled') {
+        Add-Failure "M01 reset under foreign CDC must report the explicit partial-reset reason. Output: $foreignResetOutput"
+    }
+    Assert-Scalar -Label 'Foreign CDC capture unchanged after M01 reset' -Expected $foreignCaptureBefore -Actual `
+        (Get-CaptureFingerprint -CaptureInstance $foreignCaptureInstance)
+    Assert-Scalar -Label 'M01 cache preserved by partial reset' -Expected $cacheBefore -Actual (Get-M01CacheFingerprint)
+    Assert-Scalar -Label 'M01 partial-reset status' -Expected 'NotStarted' -Actual `
+        (Get-Scalar 'SELECT Status FROM ops.DemoModuleState WHERE ModuleNumber = 1;')
+    Assert-Scalar -Label 'M01 partial-reset ledger removed' -Expected '0' -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'ops.InventoryLedger');")
+    Assert-Scalar -Label 'M01 partial-reset JSON teaching table removed' -Expected '0' -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'catalog.ProductJsonTeaching');")
+    Assert-Scalar -Label 'M01 partial-reset sequence results removed' -Expected '0' -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'catalog.ProductSkuSequenceDemo');")
+    Assert-Scalar -Label 'M01 partial-reset constraint results removed' -Expected '0' -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'catalog.ProductConstraintViolationLog');")
+
+    $foreignReapplyOutput = Invoke-M01Runner -Force
+    if ($foreignReapplyOutput -notmatch 'M01 In-Memory OLTP skipped: externally owned CDC remains enabled') {
+        Add-Failure "M01 reapply after a partial reset must report the explicit XTP skip reason. Output: $foreignReapplyOutput"
+    }
+    Assert-Scalar -Label 'M01 reapply after partial reset ledger' -Expected '1' -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'ops.InventoryLedger') AND ledger_type = 2;")
 }
 catch {
     Add-Failure $_.Exception.Message
 }
 finally {
+    try {
+        if ($foreignCaptureCreated) {
+            Invoke-Query -Query @"
+IF EXISTS (SELECT 1 FROM cdc.change_tables WHERE capture_instance = N'$foreignCaptureInstance')
+    EXEC sys.sp_cdc_disable_table
+        @source_schema = N'catalog',
+        @source_name = N'Products',
+        @capture_instance = N'$foreignCaptureInstance';
+IF $(if ($foreignDatabaseCdcEnabledByTest) { 1 } else { 0 }) = 1
+   AND NOT EXISTS (SELECT 1 FROM cdc.change_tables)
+    EXEC sys.sp_cdc_disable_db;
+"@ | Out-Null
+        }
+    }
+    catch { Write-Warning "Foreign CDC test cleanup encountered an issue: $($_.Exception.Message)" }
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalSqlCmdPassword, 'Process')
     [Environment]::SetEnvironmentVariable('DP800_SQL_PASSWORD', $originalDpPassword, 'Process')
     $password = $null

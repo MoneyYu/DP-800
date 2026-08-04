@@ -31,6 +31,7 @@ DECLARE @ExpectedM08CaptureInstance sysname = N'AdventureGearM08Products';
 DECLARE @M08CaptureExists bit = 0;
 DECLARE @M08CdcDecommissioned bit = 0;
 DECLARE @RemainingCaptureCount int = 0;
+DECLARE @ExternallyOwnedCdcRemainsEnabled bit = 0;
 DECLARE @CdcOwnershipLockResult int;
 DECLARE @CdcOwnershipLockHeld bit = 0;
 
@@ -104,9 +105,10 @@ BEGIN TRY
     END;
 
     IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
-        THROW 51086, 'M01 specialized setup cannot replace its memory-optimized table while externally owned CDC remains enabled.', 1;
+        SET @ExternallyOwnedCdcRemainsEnabled = 1;
 
-IF OBJECT_ID(N'catalog.ProductCacheInMemory', N'U') IS NOT NULL
+IF @ExternallyOwnedCdcRemainsEnabled = 0
+   AND OBJECT_ID(N'catalog.ProductCacheInMemory', N'U') IS NOT NULL
     DROP TABLE catalog.ProductCacheInMemory;
 
 IF OBJECT_ID(N'ops.InventoryLedger', N'U') IS NOT NULL
@@ -130,7 +132,9 @@ IF EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = N'M01ProductMeta
       engine supports XTP. The filegroup/file are intentionally retained by
       reset because removing an XTP container can hang in observed containers.
 --------------------------------------------------------------------------- */
-IF CONVERT(int, SERVERPROPERTY('IsXTPSupported')) = 1
+IF @ExternallyOwnedCdcRemainsEnabled = 1
+    PRINT N'M01 In-Memory OLTP skipped: externally owned CDC remains enabled; existing cache and filegroup were preserved.';
+ELSE IF CONVERT(int, SERVERPROPERTY('IsXTPSupported')) = 1
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM sys.filegroups WHERE name = N'M01MemoryOptimized')
     BEGIN
