@@ -71,6 +71,15 @@ function Get-SqlCommentMask {
             }
             continue
         }
+        if ($state -eq 'DoubleQuote') {
+            if ($character -eq '"' -and $next -eq '"') {
+                $index++
+            }
+            elseif ($character -eq '"') {
+                $state = 'Normal'
+            }
+            continue
+        }
         if ($state -eq 'BracketIdentifier') {
             if ($character -eq ']' -and $next -eq ']') {
                 $index++
@@ -96,6 +105,9 @@ function Get-SqlCommentMask {
         }
         elseif ($character -eq "'") {
             $state = 'SingleQuote'
+        }
+        elseif ($character -eq '"') {
+            $state = 'DoubleQuote'
         }
         elseif ($character -eq '[') {
             $state = 'BracketIdentifier'
@@ -146,6 +158,9 @@ foreach ($fixture in @(
         [pscustomobject]@{ Text = '/* outer /* nested */ 繁中 */'; Expected = $true; Name = 'nested block comment Han text' }
         [pscustomobject]@{ Text = 'SELECT N''繁中'';'; Expected = $false; Name = 'string literal Han text' }
         [pscustomobject]@{ Text = 'SELECT [繁中];'; Expected = $false; Name = 'bracket identifier Han text' }
+        [pscustomobject]@{ Text = 'SELECT "-- 繁中";'; Expected = $false; Name = 'double-quoted identifier Han text' }
+        [pscustomobject]@{ Text = 'SELECT "a""b"; -- 繁中'; Expected = $true; Name = 'escaped double-quoted identifier followed by comment Han text' }
+        [pscustomobject]@{ Text = 'SELECT "a""--""b"; 繁中;'; Expected = $false; Name = 'escaped double-quoted identifier does not mask later executable Han text' }
         [pscustomobject]@{ Text = 'SELECT 繁中;'; Expected = $false; Name = 'executable Han text' }
     )) {
     if ((Test-SqlTextAllowsHanOnlyInComments -Text $fixture.Text) -ne $fixture.Expected) {
