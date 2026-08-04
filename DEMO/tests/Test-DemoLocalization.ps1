@@ -16,7 +16,7 @@ function Test-ExplicitDatabaseSafety {
 
     $databaseArguments = [regex]::Matches(
         $Command,
-        '(?i)(?<!\S)-Database(?::\s*|\s+)(?<value>"[^"]*"|''[^'']*''|\S+)')
+        '(?i)(?<!\S)-Database(?::\s*|\s+)(?<value>"[^"]*"|''[^'']*''|\S+)(?=\s|$)')
     foreach ($databaseArgument in $databaseArguments) {
         $databaseName = $databaseArgument.Groups['value'].Value.Trim([char[]]@('"', "'"))
         if (-not $databaseName.Equals('AdventureGearAI', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -135,6 +135,7 @@ foreach ($fixture in @(
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:AdventureGearAI'; Expected = $true; Name = 'colon AdventureGearAI target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database master'; Expected = $false; Name = 'space master target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:master'; Expected = $false; Name = 'colon master target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:"AdventureGearAI"foo'; Expected = $false; Name = 'colon quoted token suffix target' }
     )) {
     if ((Test-ExplicitDatabaseSafety -Command $fixture.Command) -ne $fixture.Expected) {
         Add-Failure "Database safety fixture failed for $($fixture.Name)."
