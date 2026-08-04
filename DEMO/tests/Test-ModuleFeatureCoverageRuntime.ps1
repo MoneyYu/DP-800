@@ -277,6 +277,9 @@ CROSS APPLY AI_GENERATE_CHUNKS
     OVERLAP = 10,
     ENABLE_CHUNK_SET_ID = 1
 ) AS chunks;
+-- Fixture: SQL Server LEN excludes trailing spaces, but AI chunk lengths do not.
+INSERT dbo.ChunkProbe (SourceProductId, SourceReviewId, ChunkText, ChunkOrder, ChunkOffset, ChunkLength, ChunkSetId)
+VALUES (101, 1001, N'Trailing-space chunk ', 1, 1, 21, 1);
 SELECT CASE WHEN (SELECT COUNT(*) FROM dbo.ChunkProbe) > 2
                   AND (SELECT COUNT(DISTINCT ChunkSetId) FROM dbo.ChunkProbe) = 2
                   AND NOT EXISTS
@@ -297,7 +300,7 @@ SELECT CASE WHEN (SELECT COUNT(*) FROM dbo.ChunkProbe) > 2
                   (
                       SELECT 1
                       FROM dbo.ChunkProbe
-                      WHERE ChunkLength <> LEN(ChunkText) OR ChunkOffset < 1
+                      WHERE ChunkLength <> LEN(ChunkText + N'.') - 1 OR ChunkOffset < 1
                   )
             THEN 'PASS' ELSE 'FAIL' END;
 "@ | ForEach-Object { Assert-Scalar -Label 'M09 chunk rows retain source, order, offset, length, and set identifiers' -Expected 'PASS' -Actual $_ }
@@ -437,15 +440,14 @@ VALUES
         }
     }
 
-    Invoke-Query -Database $probeDatabase -Query @"
-DECLARE @result table (RetrievedContext nvarchar(max), AugmentedPrompt nvarchar(max), LocalDifference nvarchar(max));
-INSERT @result EXEC ai.usp_BuildRagPrompt @Question = N'Which tire resists punctures on rough roads?';
-SELECT CASE WHEN EXISTS (SELECT 1 FROM ai.EmbeddingChunks)
+    if ($compatibilityLevel -ge 170) {
+        $chunkPersistenceAssertion = @"
+EXISTS (SELECT 1 FROM ai.EmbeddingChunks)
                   AND NOT EXISTS
                   (
                       SELECT 1
                       FROM ai.EmbeddingChunks AS c
-                      WHERE c.ChunkLength <> LEN(c.ChunkText)
+                      WHERE c.ChunkLength <> LEN(c.ChunkText + N'.') - 1
                          OR c.ChunkOffset < 1
                          OR (c.ChunkOrder > 1 AND NOT EXISTS
                              (
@@ -457,6 +459,17 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM ai.EmbeddingChunks)
                                    AND prior.ChunkOffset < c.ChunkOffset
                              ))
                   )
+"@
+    }
+    else {
+        Write-Host "SKIP: M09 chunk persistence assertion requires compatibility level 170 (current: $compatibilityLevel)." -ForegroundColor Yellow
+        $chunkPersistenceAssertion = '1 = 1'
+    }
+
+    Invoke-Query -Database $probeDatabase -Query @"
+DECLARE @result table (RetrievedContext nvarchar(max), AugmentedPrompt nvarchar(max), LocalDifference nvarchar(max));
+INSERT @result EXEC ai.usp_BuildRagPrompt @Question = N'Which tire resists punctures on rough roads?';
+SELECT CASE WHEN $chunkPersistenceAssertion
                   AND ISJSON((SELECT TOP (1) RetrievedContext FROM @result)) = 1
                   AND ISJSON((SELECT TOP (1) AugmentedPrompt FROM @result)) = 1
                   AND JSON_VALUE((SELECT TOP (1) RetrievedContext FROM @result), '$.ProductID') = N'101'
