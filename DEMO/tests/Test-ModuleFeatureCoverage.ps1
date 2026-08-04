@@ -33,12 +33,28 @@ function Get-RequiredText {
     param([string]$RelativePath)
     return Get-Text -Path (Join-Path $repoRoot $RelativePath)
 }
-function Test-RecordedMasterKeyCleanupGuard {
+function Test-AtomicMasterKeyCleanup {
     param([AllowEmptyString()][string]$Text)
 
-    # A test-created master key belongs to this test only while its current
-    # GUID still exactly matches the GUID recorded at creation time.
-    return $Text -match '(?is)\$currentMasterKeyIdentity\s*=\s*Get-Scalar.*?key_guid.*?if\s*\(\s*\[string\]::IsNullOrWhiteSpace\(\$currentMasterKeyIdentity\)\s*\).*?Add-Failure\s+.*?(?:absent|missing).*?elseif\s*\(\s*\$currentMasterKeyIdentity\s*-cne\s*\$testMasterKeyIdentity\s*\).*?Add-Failure\s+.*?(?:changed|differ).*?else\s*\{.*?DROP MASTER KEY;'
+    $invocation = [regex]::Match(
+        $Text,
+        '(?is)\$masterKeyCleanupStatus\s*=\s*Get-Scalar\s+-Database\s+''master''\s+-Query\s+@''(?<batch>.*?)''@\s+-SqlCmdVariables\s+@\{\s*TdeTestMasterKeyIdentity\s*=\s*\$testMasterKeyIdentity\s*\}'
+    )
+    if (-not $invocation.Success) { return $false }
+
+    $batch = $invocation.Groups['batch'].Value
+    return $batch -match '(?is)SET\s+XACT_ABORT\s+ON\s*;.*?BEGIN\s+TRANSACTION\s*;.*?sp_getapplock'
+        -and $batch -match '(?is)SELECT\s+@currentMasterKeyIdentity\s*=\s*key_guid.*?sys\.symmetric_keys\s+WITH\s*\(\s*UPDLOCK\s*,\s*HOLDLOCK\s*\)'
+        -and $batch -match '(?is)IF\s+@expectedMasterKeyIdentity\s+IS\s+NULL.*?ROLLBACK\s+TRANSACTION\s*;.*?SELECT\s+N''MISMATCH''\s+AS\s+CleanupStatus'
+        -and $batch -match '(?is)IF\s+@currentMasterKeyIdentity\s+IS\s+NULL.*?ROLLBACK\s+TRANSACTION\s*;.*?SELECT\s+N''MISSING''\s+AS\s+CleanupStatus'
+        -and $batch -match '(?is)ELSE\s+IF\s+@currentMasterKeyIdentity\s*<>\s*@expectedMasterKeyIdentity.*?ROLLBACK\s+TRANSACTION\s*;.*?SELECT\s+N''MISMATCH''\s+AS\s+CleanupStatus'
+        -and $batch -match '(?is)ELSE.*?DROP\s+MASTER\s+KEY\s*;.*?COMMIT\s+TRANSACTION\s*;.*?SELECT\s+N''DROPPED''\s+AS\s+CleanupStatus'
+        -and ([regex]::Matches($Text, '(?i)\bDROP\s+MASTER\s+KEY\s*;')).Count -eq 1
+}
+function Test-GetScalarForwardsSqlCmdVariables {
+    param([AllowEmptyString()][string]$Text)
+
+    return $Text -match '(?is)function\s+Get-Scalar\s*\{\s*param\s*\(\s*\[string\]\$Database\s*,\s*\[string\]\$Query\s*,\s*\[hashtable\]\$SqlCmdVariables\s*\).*?Invoke-Query\s+-Database\s+\$Database\s+-Query\s+\$Query\s+-SqlCmdVariables\s+\$SqlCmdVariables'
 }
 function Normalize-DockerfileSource {
     param([AllowEmptyString()][string]$Text)
@@ -208,36 +224,63 @@ foreach ($requirement in @(
     Assert-Present -Text $requirement.Text -Pattern $requirement.Pattern -Message $requirement.Message
 }
 
-# TDE cleanup must never drop a master key whose GUID changed after this test
-# created its temporary key. The fixtures protect the guard itself as well as
-# the runtime test's use of it.
-$guardedMasterKeyCleanupFixture = @'
-$currentMasterKeyIdentity = Get-Scalar -Database 'master' -Query @"
-SELECT CONVERT(nvarchar(36), key_guid) FROM sys.symmetric_keys;
+# TDE cleanup must read, compare, and drop a test-owned master key in one
+# transactional sqlcmd invocation. The fixtures protect that atomic boundary.
+$atomicMasterKeyCleanupFixture = @"
+`$masterKeyCleanupStatus = Get-Scalar -Database 'master' -Query @'
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+DECLARE @expectedMasterKeyIdentity uniqueidentifier =
+    TRY_CONVERT(uniqueidentifier, N'`$(TdeTestMasterKeyIdentity)');
+DECLARE @currentMasterKeyIdentity uniqueidentifier;
+
+BEGIN TRANSACTION;
+EXEC sys.sp_getapplock @Resource = N'DP800_M05_TestMasterKeyCleanup',
+    @LockMode = N'Exclusive', @LockOwner = N'Transaction';
+SELECT @currentMasterKeyIdentity = key_guid
+FROM sys.symmetric_keys WITH (UPDLOCK, HOLDLOCK)
+WHERE name = N'##MS_DatabaseMasterKey##';
+
+IF @expectedMasterKeyIdentity IS NULL
+BEGIN
+    ROLLBACK TRANSACTION;
+    SELECT N'MISMATCH' AS CleanupStatus;
+END
+ELSE IF @currentMasterKeyIdentity IS NULL
+BEGIN
+    ROLLBACK TRANSACTION;
+    SELECT N'MISSING' AS CleanupStatus;
+END
+ELSE IF @currentMasterKeyIdentity <> @expectedMasterKeyIdentity
+BEGIN
+    ROLLBACK TRANSACTION;
+    SELECT N'MISMATCH' AS CleanupStatus;
+END
+ELSE
+BEGIN
+    DROP MASTER KEY;
+    COMMIT TRANSACTION;
+    SELECT N'DROPPED' AS CleanupStatus;
+END
+'@ -SqlCmdVariables @{ TdeTestMasterKeyIdentity = `$testMasterKeyIdentity }
 "@
-if ([string]::IsNullOrWhiteSpace($currentMasterKeyIdentity)) {
-    Add-Failure 'M05 TDE test-owned master database master key is absent; cleanup will not drop an unknown master key.'
-}
-elseif ($currentMasterKeyIdentity -cne $testMasterKeyIdentity) {
-    Add-Failure 'M05 TDE test-owned master database master key changed; cleanup will not drop a different master key.'
-}
-else {
-    Invoke-Query -Database 'master' -Query 'DROP MASTER KEY;' | Out-Null
-}
-'@
 $unsafeMasterKeyCleanupFixture = @'
-if ($createdTestMasterKey) {
+$currentMasterKeyIdentity = Get-Scalar -Database 'master' -Query 'SELECT key_guid FROM sys.symmetric_keys;'
+if ($currentMasterKeyIdentity -eq $testMasterKeyIdentity) {
     Invoke-Query -Database 'master' -Query 'DROP MASTER KEY;' | Out-Null
 }
 '@
-if (-not (Test-RecordedMasterKeyCleanupGuard -Text $guardedMasterKeyCleanupFixture)) {
-    Add-Failure 'TDE master key cleanup guard self-fixture must be accepted.'
+if (-not (Test-AtomicMasterKeyCleanup -Text $atomicMasterKeyCleanupFixture)) {
+    Add-Failure 'TDE atomic master key cleanup self-fixture must be accepted.'
 }
-if (Test-RecordedMasterKeyCleanupGuard -Text $unsafeMasterKeyCleanupFixture) {
-    Add-Failure 'TDE master key cleanup guard unsafe self-fixture must be rejected.'
+if (Test-AtomicMasterKeyCleanup -Text $unsafeMasterKeyCleanupFixture) {
+    Add-Failure 'TDE atomic master key cleanup unsafe self-fixture must be rejected.'
 }
-if (-not (Test-RecordedMasterKeyCleanupGuard -Text $m03M05Runtime)) {
-    Add-Failure 'M03/M05 runtime TDE cleanup must query the current master key GUID and drop only its recorded test-owned key.'
+if (-not (Test-AtomicMasterKeyCleanup -Text $m03M05Runtime)) {
+    Add-Failure 'M03/M05 runtime TDE cleanup must atomically lock, compare, and conditionally drop its recorded test-owned master key.'
+}
+if (-not (Test-GetScalarForwardsSqlCmdVariables -Text $m03M05Runtime)) {
+    Add-Failure 'M03/M05 runtime Get-Scalar must forward SQLCMD variables to the atomic TDE cleanup batch.'
 }
 
 # M01 and DEMO root documentation must distinguish feature support from data volume.
