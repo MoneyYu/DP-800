@@ -31,6 +31,12 @@ resource "azurerm_postgresql_flexible_server" "lab01f" {
   }
 
   tags = local.default_tags
+
+  # Azure assigns an availability zone when none is requested. The provider then
+  # tries to clear it, which it refuses to do outside a standby-zone exchange.
+  lifecycle {
+    ignore_changes = [zone]
+  }
 }
 
 resource "azurerm_postgresql_flexible_server_database" "lab01f" {

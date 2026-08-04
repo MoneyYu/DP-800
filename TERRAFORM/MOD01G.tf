@@ -1,9 +1,11 @@
 resource "azapi_resource" "dbwatcher" {
   count = var.enable_operations ? 1 : 0
 
-  # Database watcher remains a preview service. 2025-01-02 is the latest
-  # verified ARM API, and Japan West is a documented supported region.
-  type      = "Microsoft.DatabaseWatcher/watchers@2025-01-02"
+  # Database watcher remains a preview service. 2024-10-01-preview is the newest
+  # API version the resource provider advertises (verify with
+  # az provider show --namespace Microsoft.DatabaseWatcher), and Japan West is a
+  # supported region while Japan East is not.
+  type      = "Microsoft.DatabaseWatcher/watchers@2024-10-01-preview"
   name      = "${local.lab01_name}-db-watcher-${local.random_str}"
   location  = "Japan West"
   parent_id = azurerm_resource_group.dp300.id
