@@ -63,102 +63,144 @@ DECLARE @M06RecoveryPhase nvarchar(30);
 DECLARE @M06CurrentQueryCaptureMode nvarchar(60);
 DECLARE @M06RecoveryStateActive bit = 0;
 DECLARE @M06UnforceCompleted bit = 1;
-IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
-BEGIN
-    IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'ExpectedDemoQueryCaptureMode') IS NULL
-        ALTER TABLE ops.M06QueryStoreRuntimeState
-            ADD ExpectedDemoQueryCaptureMode nvarchar(60) NULL;
+DECLARE @M06AppLockResult int;
+DECLARE @M06AppLockHeld bit = 0;
 
-    IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'RecoveryPhase') IS NULL
-        ALTER TABLE ops.M06QueryStoreRuntimeState
-            ADD RecoveryPhase nvarchar(30) NULL;
+BEGIN TRY
+    EXEC @M06AppLockResult = sys.sp_getapplock
+        @Resource = N'DP800.M06.QueryStoreRecovery',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Session',
+        @LockTimeout = 60000;
 
-    UPDATE ops.M06QueryStoreRuntimeState
-    SET ExpectedDemoQueryCaptureMode = N'ALL',
-        RecoveryPhase = N'Active'
-    WHERE M06QueryStoreRuntimeStateID = 1
-      AND ExpectedDemoQueryCaptureMode IS NULL
-      AND RecoveryPhase IS NULL;
+    IF @M06AppLockResult < 0
+        THROW 51007, N'M06 reset could not acquire the Query Store recovery lock.', 1;
 
-    SELECT
-        @M06PriorQueryCaptureMode = PriorQueryCaptureMode,
-        @M06ExpectedDemoQueryCaptureMode = ExpectedDemoQueryCaptureMode,
-        @M06RecoveryPhase = RecoveryPhase,
-        @M06RecoveryStateActive = CASE WHEN RecoveryPhase = N'Active' THEN 1 ELSE 0 END
-    FROM ops.M06QueryStoreRuntimeState
-    WHERE M06QueryStoreRuntimeStateID = 1;
-END;
+    SET @M06AppLockHeld = 1;
 
-DECLARE M06ForcedPlanCursor CURSOR LOCAL FAST_FORWARD FOR
-SELECT q.query_id, p.plan_id
-FROM sys.query_store_query AS q
-INNER JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
-INNER JOIN sys.query_store_plan AS p ON p.query_id = q.query_id
-WHERE qt.query_sql_text LIKE N'%DP800 M06 plan forcing probe%'
-  AND p.is_forced_plan = 1;
-
-OPEN M06ForcedPlanCursor;
-FETCH NEXT FROM M06ForcedPlanCursor INTO @M06QueryId, @M06PlanId;
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    BEGIN TRY
-        EXEC sys.sp_query_store_unforce_plan @query_id = @M06QueryId, @plan_id = @M06PlanId;
-    END TRY
-    BEGIN CATCH
-        SET @M06UnforceCompleted = 0;
-        PRINT CONCAT(N'M06 reset could not unforce Query Store plan ', @M06PlanId, N': ', ERROR_MESSAGE());
-    END CATCH;
-
-    FETCH NEXT FROM M06ForcedPlanCursor INTO @M06QueryId, @M06PlanId;
-END;
-CLOSE M06ForcedPlanCursor;
-DEALLOCATE M06ForcedPlanCursor;
-
-IF @M06UnforceCompleted = 0
-    THROW 51004, N'M06 reset could not complete Query Store plan cleanup; recovery state was retained for a later retry.', 1;
-
-IF @M06RecoveryStateActive = 1
-BEGIN
-    IF @M06PriorQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
-        THROW 51005, N'M06 reset found an invalid Query Store recovery capture mode; recovery state was retained.', 1;
-
-    IF @M06ExpectedDemoQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
-        THROW 51006, N'M06 reset found an invalid expected Query Store recovery mode; recovery state was retained.', 1;
-
-    SELECT @M06CurrentQueryCaptureMode = query_capture_mode_desc
-    FROM sys.database_query_store_options;
-
-    IF @M06CurrentQueryCaptureMode = @M06ExpectedDemoQueryCaptureMode
+    /* Hold the same lifecycle lock as the interactive demo from legacy-column
+       migration through cleanup, so concurrent reset/demo sessions cannot race
+       on the recovery table or overwrite a manually changed capture mode. */
+    IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
     BEGIN
-        DECLARE @M06RestoreQueryCaptureMode nvarchar(max) =
-            N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @M06PriorQueryCaptureMode + N');';
-        EXEC sys.sp_executesql @M06RestoreQueryCaptureMode;
+        IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'ExpectedDemoQueryCaptureMode') IS NULL
+            ALTER TABLE ops.M06QueryStoreRuntimeState
+                ADD ExpectedDemoQueryCaptureMode nvarchar(60) NULL;
+
+        IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'RecoveryPhase') IS NULL
+            ALTER TABLE ops.M06QueryStoreRuntimeState
+                ADD RecoveryPhase nvarchar(30) NULL;
+
+        /* A legacy row can gain these columns in this batch. Use dynamic SQL
+           so the post-migration statements compile against the new schema. */
+        EXEC sys.sp_executesql
+            N'UPDATE ops.M06QueryStoreRuntimeState
+              SET ExpectedDemoQueryCaptureMode = N''ALL'',
+                  RecoveryPhase = N''Active''
+              WHERE M06QueryStoreRuntimeStateID = 1
+                AND ExpectedDemoQueryCaptureMode IS NULL
+                AND RecoveryPhase IS NULL;';
+
+        EXEC sys.sp_executesql
+            N'SELECT
+                  @PriorQueryCaptureMode = PriorQueryCaptureMode,
+                  @ExpectedDemoQueryCaptureMode = ExpectedDemoQueryCaptureMode,
+                  @RecoveryPhase = RecoveryPhase
+              FROM ops.M06QueryStoreRuntimeState
+              WHERE M06QueryStoreRuntimeStateID = 1;',
+            N'@PriorQueryCaptureMode nvarchar(60) OUTPUT,
+              @ExpectedDemoQueryCaptureMode nvarchar(60) OUTPUT,
+              @RecoveryPhase nvarchar(30) OUTPUT',
+            @PriorQueryCaptureMode = @M06PriorQueryCaptureMode OUTPUT,
+            @ExpectedDemoQueryCaptureMode = @M06ExpectedDemoQueryCaptureMode OUTPUT,
+            @RecoveryPhase = @M06RecoveryPhase OUTPUT;
+
+        SET @M06RecoveryStateActive = CASE WHEN @M06RecoveryPhase = N'Active' THEN 1 ELSE 0 END;
     END;
-END;
 
-IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
-BEGIN
-    DELETE FROM ops.M06QueryStoreRuntimeState
-    WHERE M06QueryStoreRuntimeStateID = 1;
-END;
+    DECLARE M06ForcedPlanCursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT q.query_id, p.plan_id
+    FROM sys.query_store_query AS q
+    INNER JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
+    INNER JOIN sys.query_store_plan AS p ON p.query_id = q.query_id
+    WHERE qt.query_sql_text LIKE N'%DP800 M06 plan forcing probe%'
+      AND p.is_forced_plan = 1;
 
-DROP TABLE IF EXISTS ops.PerformanceOrders;
-DROP TABLE IF EXISTS ops.M06QueryStoreRuntimeState;
-GO
+    OPEN M06ForcedPlanCursor;
+    FETCH NEXT FROM M06ForcedPlanCursor INTO @M06QueryId, @M06PlanId;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        BEGIN TRY
+            EXEC sys.sp_query_store_unforce_plan @query_id = @M06QueryId, @plan_id = @M06PlanId;
+        END TRY
+        BEGIN CATCH
+            SET @M06UnforceCompleted = 0;
+            PRINT CONCAT(N'M06 reset could not unforce Query Store plan ', @M06PlanId, N': ', ERROR_MESSAGE());
+        END CATCH;
 
-/* ---------------------------------------------------------------------------
-   State reset: only Module 6 (no dependents).
-   * 狀態重設僅影響註解中指定的模組及其相依模組。
---------------------------------------------------------------------------- */
-UPDATE ops.DemoModuleState
-SET Status = N'NotStarted',
-    StartedAtUtc = NULL,
-    CompletedAtUtc = NULL,
-    LastError = NULL,
-    ErrorNumber = NULL,
-    ErrorLine = NULL,
-    UpdatedAtUtc = SYSUTCDATETIME()
-WHERE ModuleNumber IN (6);
+        FETCH NEXT FROM M06ForcedPlanCursor INTO @M06QueryId, @M06PlanId;
+    END;
+    CLOSE M06ForcedPlanCursor;
+    DEALLOCATE M06ForcedPlanCursor;
+
+    IF @M06UnforceCompleted = 0
+        THROW 51004, N'M06 reset could not complete Query Store plan cleanup; recovery state was retained for a later retry.', 1;
+
+    IF @M06RecoveryStateActive = 1
+    BEGIN
+        IF @M06PriorQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
+            THROW 51005, N'M06 reset found an invalid Query Store recovery capture mode; recovery state was retained.', 1;
+
+        IF @M06ExpectedDemoQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
+            THROW 51006, N'M06 reset found an invalid expected Query Store recovery mode; recovery state was retained.', 1;
+
+        /* Re-read immediately before ALTER DATABASE while holding the lock.
+           A nonmatching mode is a stale record, not authority to undo a user's
+           manual Query Store configuration. */
+        SELECT @M06CurrentQueryCaptureMode = query_capture_mode_desc
+        FROM sys.database_query_store_options;
+
+        IF @M06CurrentQueryCaptureMode = @M06ExpectedDemoQueryCaptureMode
+        BEGIN
+            DECLARE @M06RestoreQueryCaptureMode nvarchar(max) =
+                N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @M06PriorQueryCaptureMode + N');';
+            EXEC sys.sp_executesql @M06RestoreQueryCaptureMode;
+        END;
+    END;
+
+    IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
+    BEGIN
+        DELETE FROM ops.M06QueryStoreRuntimeState
+        WHERE M06QueryStoreRuntimeStateID = 1;
+    END;
+
+    DROP TABLE IF EXISTS ops.PerformanceOrders;
+    DROP TABLE IF EXISTS ops.M06QueryStoreRuntimeState;
+
+    /* M06 has no downstream module dependents. Keep this state transition under
+       the lifecycle lock so setup cannot observe a partial teardown. */
+    UPDATE ops.DemoModuleState
+    SET Status = N'NotStarted',
+        StartedAtUtc = NULL,
+        CompletedAtUtc = NULL,
+        LastError = NULL,
+        ErrorNumber = NULL,
+        ErrorLine = NULL,
+        UpdatedAtUtc = SYSUTCDATETIME()
+    WHERE ModuleNumber IN (6);
+END TRY
+BEGIN CATCH
+    IF @M06AppLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M06.QueryStoreRecovery',
+            @LockOwner = N'Session';
+    THROW;
+END CATCH;
+
+IF @M06AppLockHeld = 1
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M06.QueryStoreRecovery',
+        @LockOwner = N'Session';
 GO
 
 SET NOEXEC OFF;
