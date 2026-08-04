@@ -108,11 +108,14 @@ Write-Host ''
 
 $bootstrap = Get-RequiredText 'DEMO\bootstrap\01-initialize-adventuregear-demo.sql'
 $m01 = Get-RequiredText 'DEMO\M01\common\01-objects.sql'
+$m01Specialized = Get-RequiredText 'DEMO\M01\common\02-specialized-tables.sql'
 $m01Local = Get-RequiredText 'DEMO\M01\local\01-inspect.sql'
+$m01LocalSpecialized = Get-RequiredText 'DEMO\M01\local\02-inspect-specialized.sql'
 $m01Reset = Get-RequiredText 'DEMO\M01\reset\reset.sql'
 $m03 = Get-RequiredText 'DEMO\M03\local\01-advanced-queries.sql'
 $m05 = Get-RequiredText 'DEMO\M05\common\01-security.sql'
 $m05Local = Get-RequiredText 'DEMO\M05\local\01-verify-security.sql'
+$m05Tde = Get-RequiredText 'DEMO\M05\local\02-tde-demo.sql'
 $m05Reset = Get-RequiredText 'DEMO\M05\reset\reset.sql'
 $m03M05Runtime = Get-RequiredText 'DEMO\tests\Test-M03M05FeatureCoverageRuntime.ps1'
 $m06 = Get-RequiredText 'DEMO\M06\common\01-workload.sql'
@@ -120,6 +123,10 @@ $m06Local = @(
     Get-RequiredText 'DEMO\M06\local\01-plans-query-store-dmvs.sql'
     Get-RequiredText 'DEMO\M06\local\07-isolation-rcsi-probe.sql'
     Get-RequiredText 'DEMO\M06\local\08-query-store-plan-forcing.sql'
+    Get-RequiredText 'DEMO\M06\local\09-isolation-writer.sql'
+    Get-RequiredText 'DEMO\M06\local\10-isolation-reader.sql'
+    Get-RequiredText 'DEMO\M06\local\11-enable-rcsi.sql'
+    Get-RequiredText 'DEMO\M06\local\12-isolation-rcsi-cleanup.sql'
 ) -join "`n"
 $m06Reset = Get-RequiredText 'DEMO\M06\reset\reset.sql'
 $m08 = Get-RequiredText 'DEMO\M08\common\01-product-api.sql'
@@ -142,27 +149,23 @@ foreach ($column in 'ProductMetadata', 'Preferences', 'ShippingMetadata') {
         -Message "Bootstrap must not retain an ISJSON check for native json column $column."
 }
 
-$seedTargets = [ordered]@{
-    Category      = 10
-    Product       = 150
-    Customer      = 120
-    Order         = 800
-    OrderItem     = 2000
-    ProductReview = 500
-}
-foreach ($target in $seedTargets.GetEnumerator()) {
-    $name = [regex]::Escape($target.Key)
-    $number = $target.Value
-    Assert-Present -Text $bootstrap -Pattern ("(?i)DECLARE\s+@" + $name + "Target\s+\w+\s*=\s*$number\b") `
-        -Message "Bootstrap must define the deterministic $($target.Value) $($target.Key) seed cardinality target."
+# The bootstrap derives its fixed classroom data volume from explicit seed rows
+# plus deterministic TOP ranges; it deliberately has no marker variables.
+foreach ($contract in @(
+    @{ Pattern = '(?is)INSERT\s+catalog\.Categories.*?\(\s*6,\s*N''Maintenance''.*?\(\s*10,\s*N''Travel'''; Message = 'Bootstrap must deterministically expand 5 initial categories to 10 categories.' },
+    @{ Pattern = '(?is)SET\s+IDENTITY_INSERT\s+catalog\.Products\s+ON\s*;\s*;WITH.*?SELECT\s+TOP\s*\(\s*138\s*\).*?INSERT\s+catalog\.Products.*?12\s*\+\s*n'; Message = 'Bootstrap must deterministically expand 12 initial products by 138 rows to 150 products.' },
+    @{ Pattern = '(?is)SET\s+IDENTITY_INSERT\s+customer\.Customers\s+ON\s*;\s*;WITH.*?SELECT\s+TOP\s*\(\s*114\s*\).*?INSERT\s+customer\.Customers.*?6\s*\+\s*n'; Message = 'Bootstrap must deterministically expand 6 initial customers by 114 rows to 120 customers.' },
+    @{ Pattern = '(?is)SET\s+IDENTITY_INSERT\s+sales\.Orders\s+ON\s*;\s*;WITH.*?SELECT\s+TOP\s*\(\s*794\s*\).*?INSERT\s+sales\.Orders.*?6\s*\+\s*n'; Message = 'Bootstrap must deterministically expand 6 initial orders by 794 rows to 800 orders.' },
+    @{ Pattern = '(?is)INSERT\s+sales\.OrderItems.*?\(\s*6,\s*7,\s*2,\s*44\.90\s*\).*?SELECT\s+TOP\s*\(\s*794\s*\).*?CROSS\s+JOIN\s+\(\s*VALUES\s+\(\s*1\s*\)\s*,\s*\(\s*2\s*\)\s*,\s*\(\s*3\s*\)\s*\)\s+AS\s+line.*?INSERT\s+sales\.OrderItems'; Message = 'Bootstrap must deterministically produce 2,400 order items from 13 initial rows, 5 supplemental rows, and 794 three-line orders.' },
+    @{ Pattern = '(?is)SET\s+IDENTITY_INSERT\s+customer\.ProductReviews\s+ON\s*;\s*;WITH.*?SELECT\s+TOP\s*\(\s*486\s*\).*?INSERT\s+customer\.ProductReviews.*?14\s*\+\s*n'; Message = 'Bootstrap must deterministically expand 14 initial reviews by 486 rows to 500 reviews.' }
+)) {
+    Assert-Present -Text $bootstrap -Pattern $contract.Pattern -Message $contract.Message
 }
 Assert-Present -Text $bootstrap -Pattern '(?i)(deterministic|決定性)' `
     -Message 'Bootstrap must state that the large seed is deterministic.'
-Assert-Present -Text $bootstrap -Pattern '(?i)(>=|at least|至少)\s*2000|\b2000\b.{0,80}(?:OrderItems|order items)' `
-    -Message 'Bootstrap must guarantee at least 2000 order items.'
 
 # M01: SQL Server 2025 core object features plus reset symmetry.
-$m01All = "$m01`n$m01Local"
+$m01All = "$m01`n$m01Specialized`n$m01Local`n$m01LocalSpecialized"
 foreach ($requirement in @(
     @{ Pattern = '(?i)CREATE\s+JSON\s+INDEX'; Message = 'M01 must create a JSON index.' },
     @{ Pattern = '(?i)JSON_VALUE\s*\('; Message = 'M01 must demonstrate JSON_VALUE.' },
@@ -182,7 +185,7 @@ foreach ($pattern in '(?i)DROP\s+(?:JSON\s+)?INDEX', '(?i)DROP\s+TABLE', '(?i)DR
     Assert-Present -Text $m01Reset -Pattern $pattern `
         -Message "M01 reset must contain matching teardown for feature objects ($pattern)."
 }
-foreach ($feature in 'JSON', 'MEMORY_OPTIMIZED|memory-optimized', 'LEDGER', 'SEQUENCE', 'EXTERNAL') {
+foreach ($feature in 'JSON', 'In-Memory|M01MemoryOptimized|ProductCacheInMemory', 'LEDGER', 'SEQUENCE', 'EXTERNAL') {
     Assert-Present -Text $m01Reset -Pattern ("(?i)" + $feature) `
         -Message "M01 reset must identify its $feature feature teardown."
 }
@@ -196,8 +199,8 @@ foreach ($requirement in @(
     @{ Text = "$m05`n$m05Local"; Pattern = '(?i)MASKED\s+WITH\s*\(\s*FUNCTION\s*=\s*''default\(\)''\s*\)'; Message = 'M05 must demonstrate default() dynamic data masking.' },
     @{ Text = $m05; Pattern = '(?i)GRANT\s+\w+.+\s+ON\s+(?:OBJECT::)?\S+'; Message = 'M05 must grant an object-level permission.' },
     @{ Text = $m05; Pattern = '(?i)DENY\s+\w+.+\s+ON\s+(?:OBJECT::)?\S+'; Message = 'M05 must deny an object-level permission.' },
-    @{ Text = "$m05`n$m05Local`n$m05Reset"; Pattern = '(?i)CREATE\s+DATABASE.{0,120}TDE'; Message = 'M05 must provide an isolated TDE demonstration database.' },
-    @{ Text = "$m05`n$m05Local`n$m05Reset"; Pattern = '(?i)DROP\s+DATABASE.{0,120}TDE'; Message = 'M05 isolated TDE demo must include a cleanup path.' },
+    @{ Text = $m05Tde; Pattern = '(?is)DECLARE\s+@DemoDatabase\s+sysname\s*=\s*N''DP800_M05_TdeDemo''.*?SET\s+@Sql\s*=\s*N''CREATE\s+DATABASE\s+''\s*\+\s*QUOTENAME\s*\(\s*@DemoDatabase\s*\)'; Message = 'M05 must provide an isolated TDE demonstration database.' },
+    @{ Text = $m05Tde; Pattern = '(?is)SET\s+@Sql\s*=\s*N''ALTER\s+DATABASE\s+''\s*\+\s*QUOTENAME\s*\(\s*@DemoDatabase\s*\).*?DROP\s+DATABASE\s+''\s*\+\s*QUOTENAME\s*\(\s*@DemoDatabase\s*\)'; Message = 'M05 isolated TDE demo must include a cleanup path.' },
     @{ Text = "$m06`n$m06Local"; Pattern = '(?i)SET\s+TRANSACTION\s+ISOLATION\s+LEVEL'; Message = 'M06 must demonstrate SET TRANSACTION ISOLATION LEVEL.' },
     @{ Text = "$m06`n$m06Local"; Pattern = '(?i)sp_query_store_force_plan'; Message = 'M06 must demonstrate sp_query_store_force_plan.' },
     @{ Text = "$m06`n$m06Local`n$m06Reset"; Pattern = '(?i)sp_query_store_unforce_plan'; Message = 'M06 must unforce a Query Store plan during cleanup.' },

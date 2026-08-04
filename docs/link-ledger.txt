@@ -1,8 +1,8 @@
 # DP-800T00-A Link Ledger
 # Format: label | url
 # Used by: .github/skills/course-prep/scripts/link_check.py
-# Last verified: 2026-08-03
-# Last check result: 89/89 entries HTTP 200 (87 unique URLs)
+# Last verified: 2026-08-04
+# Last check result: 115/115 entries HTTP 200 (113 unique URLs)
 # Run: python .github/skills/course-prep/scripts/link_check.py docs/link-ledger.txt
 
 # ── ESI PORTALS ───────────────────────────────────────────────────────────────
@@ -34,6 +34,13 @@ M01 - In-Memory OLTP overview and usage scenarios | https://learn.microsoft.com/
 M01 - Ledger Overview | https://learn.microsoft.com/en-us/sql/relational-databases/security/ledger/ledger-overview?view=sql-server-ver17
 M01 - Graph Processing - SQL Server and Azure SQL Database | https://learn.microsoft.com/en-us/sql/relational-databases/graphs/sql-graph-overview?view=sql-server-ver17
 M01 - CREATE PARTITION FUNCTION (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/statements/create-partition-function-transact-sql?view=sql-server-ver17
+M01 - JSON data type (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/data-types/json-data-type?view=sql-server-ver17
+M01 - CREATE JSON INDEX (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/statements/create-json-index-transact-sql?view=sql-server-ver17
+M01 - JSON data in SQL Server | https://learn.microsoft.com/en-us/sql/relational-databases/json/json-data-sql-server?view=sql-server-ver17
+M01 - CREATE SEQUENCE (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/statements/create-sequence-transact-sql?view=sql-server-ver17
+M01 - Introduction to memory-optimized tables | https://learn.microsoft.com/en-us/sql/relational-databases/in-memory-oltp/introduction-to-memory-optimized-tables?view=sql-server-ver17
+M01 - Create an updatable ledger table | https://learn.microsoft.com/en-us/sql/relational-databases/security/ledger/ledger-how-to-updatable-ledger-tables?view=sql-server-ver17
+M01 - CREATE EXTERNAL TABLE (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/statements/create-external-table-transact-sql?view=sql-server-ver17
 
 # M02 - Implement programmability objects with SQL
 M02 - Implement programmability objects with SQL | https://learn.microsoft.com/en-us/training/modules/implement-programmability-objects/
@@ -48,6 +55,11 @@ M03 - TRY...CATCH (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/l
 M03 - JSON Functions (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/json-functions-transact-sql?view=sql-server-ver17
 M03 - WINDOW (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/queries/select-window-transact-sql?view=sql-server-ver17
 M03 - WITH common_table_expression (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/queries/with-common-table-expression-transact-sql?view=sql-server-ver17
+M03 - OPENJSON (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/openjson-transact-sql?view=sql-server-ver17
+M03 - Format query results as JSON with FOR JSON | https://learn.microsoft.com/en-us/sql/relational-databases/json/format-query-results-as-json-with-for-json-sql-server?view=sql-server-ver17
+M03 - REGEXP_LIKE (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/regexp-like-transact-sql?view=sql-server-ver17
+M03 - SOUNDEX (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/soundex-transact-sql?view=sql-server-ver17
+M03 - JSON_CONTAINS (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/json-contains-transact-sql?view=sql-server-ver17
 
 # M04 - Implement SQL solutions by using AI-assisted tools
 M04 - Implement SQL solutions by using AI-assisted tools | https://learn.microsoft.com/en-us/training/modules/design-implement-sql-solutions-ai-assisted-tools/
@@ -61,6 +73,9 @@ M05 - Always Encrypted | https://learn.microsoft.com/en-us/sql/relational-databa
 M05 - Dynamic Data Masking | https://learn.microsoft.com/en-us/sql/relational-databases/security/dynamic-data-masking?view=sql-server-ver17
 M05 - Row-Level Security | https://learn.microsoft.com/en-us/sql/relational-databases/security/row-level-security?view=sql-server-ver17
 M05 - Microsoft Entra authentication for Azure SQL | https://learn.microsoft.com/en-us/azure/azure-sql/database/authentication-aad-overview?view=azuresql
+M05 - Transparent Data Encryption | https://learn.microsoft.com/en-us/sql/relational-databases/security/encryption/transparent-data-encryption?view=sql-server-ver17
+M05 - SQL Server Audit | https://learn.microsoft.com/en-us/sql/relational-databases/security/auditing/sql-server-audit-database-engine?view=sql-server-ver17
+M05 - GRANT object permissions | https://learn.microsoft.com/en-us/sql/t-sql/statements/grant-object-permissions-transact-sql?view=sql-server-ver17
 
 # M06 - Optimize database performance
 M06 - Optimize database performance | https://learn.microsoft.com/en-us/training/modules/optimize-database-performance/
@@ -68,6 +83,9 @@ M06 - Monitor performance by using the Query Store | https://learn.microsoft.com
 M06 - vCore purchasing model - Azure SQL Database | https://learn.microsoft.com/en-us/azure/azure-sql/database/service-tiers-sql-database-vcore?view=azuresql
 M06 - Query Performance Insight - Azure SQL Database | https://learn.microsoft.com/en-us/azure/azure-sql/database/query-performance-insight-use?view=azuresql
 M06 - Execution plans | https://learn.microsoft.com/en-us/sql/relational-databases/performance/execution-plans?view=sql-server-ver17
+M06 - SET TRANSACTION ISOLATION LEVEL | https://learn.microsoft.com/en-us/sql/t-sql/statements/set-transaction-isolation-level-transact-sql?view=sql-server-ver17
+M06 - sp_query_store_force_plan | https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-query-store-force-plan-transact-sql?view=sql-server-ver17
+M06 - Deadlocks guide | https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-deadlocks-guide?view=sql-server-ver17
 
 # M07 - Implement CI/CD by using SQL database projects
 M07 - Implement CI/CD by using SQL database projects | https://learn.microsoft.com/en-us/training/modules/implement-cicd-sql-database-projects/
@@ -75,12 +93,16 @@ M07 - SQL Database Projects | https://learn.microsoft.com/en-us/sql/tools/sql-da
 M07 - SQL Projects Automation | https://learn.microsoft.com/en-us/sql/tools/sql-database-projects/sql-projects-automation?view=sql-server-ver17
 M07 - Azure/sql-action | https://github.com/Azure/sql-action
 M07 - SqlPackage | https://learn.microsoft.com/en-us/sql/tools/sqlpackage/sqlpackage?view=sql-server-ver17
+M07 - Compare database projects | https://learn.microsoft.com/en-us/sql/tools/sql-database-projects/howto/compare-database-project?view=sql-server-ver17
 
 # M08 - Integrate SQL solutions with Azure services
 M08 - Integrate SQL solutions with Azure services | https://learn.microsoft.com/en-us/training/modules/integrate-sql-solutions-azure-services/
 M08 - Data API builder overview | https://learn.microsoft.com/en-us/azure/data-api-builder/overview
 M08 - Quickstart: Use Data API builder with SQL | https://learn.microsoft.com/en-us/azure/data-api-builder/quickstart/basic-sql
 M08 - Change Data Capture with Azure SQL Database | https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql
+M08 - About Change Data Capture | https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-ver17
+M08 - Data API Builder entities | https://learn.microsoft.com/en-us/azure/data-api-builder/configuration/entities
+M08 - Data API Builder runtime | https://learn.microsoft.com/en-us/azure/data-api-builder/configuration/runtime
 
 # M09 - Design and implement models and embeddings with SQL
 M09 - Design and implement models and embeddings with SQL | https://learn.microsoft.com/en-us/training/modules/design-implement-models-embeddings-with-sql/
@@ -89,6 +111,7 @@ M09 - AI_GENERATE_EMBEDDINGS (Transact-SQL) | https://learn.microsoft.com/en-us/
 M09 - Vector search and vector indexes in SQL Server | https://learn.microsoft.com/en-us/sql/sql-server/ai/vectors?view=sql-server-ver17
 M09 - AI Functions (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/ai-functions-transact-sql?view=sql-server-ver17
 M09 - Intelligent applications and AI in SQL Server | https://learn.microsoft.com/en-us/sql/sql-server/ai/artificial-intelligence-intelligent-applications?view=sql-server-ver17
+M09 - AI_GENERATE_CHUNKS (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/ai-generate-chunks-transact-sql?view=sql-server-ver17
 
 # M10 - Design and implement intelligent search with SQL
 M10 - Design and implement intelligent search with SQL | https://learn.microsoft.com/en-us/training/modules/design-implement-intelligent-search-with-sql/
@@ -97,6 +120,8 @@ M10 - VECTOR_DISTANCE (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-s
 M10 - VECTOR_SEARCH (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/vector-search-transact-sql?view=sql-server-ver17
 M10 - CREATE VECTOR INDEX (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/statements/create-vector-index-transact-sql?view=sql-server-ver17
 M10 - Vector and embeddings FAQ | https://learn.microsoft.com/en-us/sql/sql-server/ai/vectors-frequently-asked-questions?view=sql-server-ver17
+M10 - CONTAINS (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/queries/contains-transact-sql?view=sql-server-ver17
+M10 - FREETEXT (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/queries/freetext-transact-sql?view=sql-server-ver17
 
 # M11 - Design and implement RAG with SQL
 M11 - Design and implement RAG with SQL | https://learn.microsoft.com/en-us/training/modules/design-implement-rag-with-sql/
@@ -105,6 +130,7 @@ M11 - CREATE DATABASE SCOPED CREDENTIAL (Transact-SQL) | https://learn.microsoft
 M11 - VECTOR_SEARCH (Transact-SQL) | https://learn.microsoft.com/en-us/sql/t-sql/functions/vector-search-transact-sql?view=sql-server-ver17
 M11 - Intelligent applications and AI in SQL Server | https://learn.microsoft.com/en-us/sql/sql-server/ai/artificial-intelligence-intelligent-applications?view=sql-server-ver17
 M11 - What's new in SQL Server 2025 | https://learn.microsoft.com/en-us/sql/sql-server/what-s-new-in-sql-server-2025?view=sql-server-ver17
+M11 - Remove square brackets from JSON with WITHOUT_ARRAY_WRAPPER | https://learn.microsoft.com/en-us/sql/relational-databases/json/remove-square-brackets-from-json-without-array-wrapper-option?view=sql-server-ver17
 
 # ── CREDENTIAL & EXAM ─────────────────────────────────────────────────────────
 Microsoft Certified: SQL AI Developer Associate | https://learn.microsoft.com/en-us/credentials/certifications/developing-ai-enabled-database-solutions/

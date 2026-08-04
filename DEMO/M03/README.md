@@ -24,6 +24,8 @@ Add `-Force` to re-run a Completed module.
 - Recursive CTE org-chart traversal.
 - Window functions (`ROW_NUMBER`, partitioned `SUM`) over catalog products.
 - `OPENJSON` document shredding.
+- `FOR JSON PATH` output plus `JSON_ARRAYAGG` relational-to-JSON aggregation
+  and `JSON_CONTAINS` against native JSON.
 - `SOUNDEX` / `DIFFERENCE` fuzzy matching.
 - SQL graph `MATCH` traversal.
 - Runtime detection of SQL Server 2025 `REGEXP_LIKE` over customer emails.

@@ -21,7 +21,18 @@ Bootstrap 會在 `AdventureGearAI` 中佈建八個領域結構描述：
 | `search` | 由目錄產品與客戶評論建立的 M10 搜尋文件。 |
 | `ai` | M09 內嵌文件，以及 M11 RAG 提示與預存程序介面。 |
 
-由 bootstrap 僅建立一次的標準種子資料，是一個小型 AdventureGear 目錄：自行車、零件、配件、服飾與導航產品，以及其客戶、訂單和評論。模組會擴充此核心；絕不會重新建立它。
+由 bootstrap 僅建立一次的標準種子資料包含 **10 個 categories、150 個 products、120 個
+customers、800 個 orders、2,400 個 order items 和 500 個 reviews**。模組會擴充此核心；
+絕不會重新建立它。此決定性資料量分別由固定 seed 維持，功能偵測則由當天的
+engine/image 決定：即使 In-Memory OLTP、
+Ledger、Sequence、PolyBase、Full-Text Search 或其他已安裝功能不可用，仍能以相同 seed
+教授原生 `json` 與 JSON index 操作。
+
+M01 會新增 native JSON、SQL Server 2025 preview JSON index、In-Memory OLTP、Ledger、
+Sequence 和 feature-detected PolyBase external metadata。其 reset 會保留 memory-optimized
+filegroup/container（移除它可能使 container 停滯），並且 Ledger drop 後可能留下
+engine-managed dropped-ledger 資料表；兩者皆為刻意設計。需要 Full-Text Search 或 PolyBase
+時，請使用 [custom FTS/PolyBase Docker image](docker/README.md)。
 
 ## 本機連線
 
@@ -109,7 +120,7 @@ pwsh -NoProfile -File DEMO/reset/Reset-AdventureGearAI.ps1
 
 | 模組 | 本機 SQL Server 2025 | Azure 路徑 |
 |---|---|---|
-| M01 物件 | `catalog` 上的時間資料表價格、已編製索引的 JSON 投影、分割、圖形 | 相同核心語法；服務層級/儲存體選項不同 |
+| M01 物件 | `catalog` 上的 native JSON/preview JSON index、時間資料表、In-Memory、Ledger、Sequence、分割、圖形與 feature-detected PolyBase | 相同核心語法；服務層級/儲存體選項不同 |
 | M02 可程式性 | `sales` 中的檢視表、預存程序、函式、觸發程序 | 相同核心物件 |
 | M03 進階 T-SQL | CTE、視窗、JSON、模糊、圖形、錯誤處理；偵測 regex | Azure SQL 依服務/版本支援記載的 regex 介面 |
 | M04 AI 輔助工作流程 | 針對 `sales`/`customer` 的離線提示/審查練習；不相依於 Copilot API | 使用已核准的 Copilot/Fabric 工具與身分識別控制 |

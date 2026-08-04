@@ -1,5 +1,7 @@
 # SQL Server 2025 Full-Text and PolyBase demo image
 
+English | [繁體中文](README.zh-TW.md)
+
 This is the official image-based path for the local features required by the
 DP-800 demos. No SQL Server environment variable installs or enables Full-Text
 Search (FTS) or PolyBase after a container has been created; use this custom

@@ -46,9 +46,33 @@ if ([string]::IsNullOrWhiteSpace($password)) {
 
 function Invoke-Query {
     param([string]$Database, [string]$Query)
-    $result = & $sqlcmd.Source -S $Server -U $User -d $Database -Q $Query -h -1 -W -b -C -I -x 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "sqlcmd query failed against '$Database': $($result -join ' ')" }
-    return @($result | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
+
+    # The installed legacy sqlcmd splits a -Q argument containing JSON double
+    # quotes. An ephemeral UTF-8 input file preserves the SQL batch exactly.
+    $inputFile = Join-Path $PSScriptRoot ".Test-ModuleFeatureCoverageRuntime-$PID.sql"
+    try {
+        [System.IO.File]::WriteAllText(
+            $inputFile,
+            $Query,
+            [System.Text.UTF8Encoding]::new($true)
+        )
+        $result = & $sqlcmd.Source -S $Server -U $User -d $Database -i $inputFile -h -1 -W -b -C -I -x 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "sqlcmd query failed against '$Database': $($result -join ' ')" }
+        return @(
+            $result |
+            ForEach-Object { "$_".Trim() } |
+            Where-Object {
+                $_ -ne '' -and
+                $_ -notmatch '^\(\d+ rows affected\)$' -and
+                $_ -notmatch '^Warning:' -and
+                $_ -notmatch '^Update mask evaluation will be disabled' -and
+                $_ -notmatch '^SQLServerAgent is not currently running'
+            }
+        )
+    }
+    finally {
+        Remove-Item -LiteralPath $inputFile -Force -ErrorAction SilentlyContinue
+    }
 }
 function Get-Scalar {
     param([string]$Database, [string]$Query)
@@ -77,10 +101,27 @@ Write-Host ''
 
 # Source setup gates explain the intended RED state before executing any probe.
 $bootstrap = Get-Text 'DEMO\bootstrap\01-initialize-adventuregear-demo.sql'
-$m01 = Get-Text 'DEMO\M01\common\01-objects.sql'
+$m01 = @(
+    Get-Text 'DEMO\M01\common\01-objects.sql'
+    Get-Text 'DEMO\M01\common\02-specialized-tables.sql'
+    Get-Text 'DEMO\M01\local\01-inspect.sql'
+    Get-Text 'DEMO\M01\local\02-inspect-specialized.sql'
+) -join "`n"
 $m03 = Get-Text 'DEMO\M03\local\01-advanced-queries.sql'
-$m05 = Get-Text 'DEMO\M05\common\01-security.sql'
-$m06 = Get-Text 'DEMO\M06\local\01-plans-query-store-dmvs.sql'
+$m05 = @(
+    Get-Text 'DEMO\M05\common\01-security.sql'
+    Get-Text 'DEMO\M05\local\01-verify-security.sql'
+    Get-Text 'DEMO\M05\local\02-tde-demo.sql'
+) -join "`n"
+$m06 = @(
+    Get-Text 'DEMO\M06\local\01-plans-query-store-dmvs.sql'
+    Get-Text 'DEMO\M06\local\07-isolation-rcsi-probe.sql'
+    Get-Text 'DEMO\M06\local\08-query-store-plan-forcing.sql'
+    Get-Text 'DEMO\M06\local\09-isolation-writer.sql'
+    Get-Text 'DEMO\M06\local\10-isolation-reader.sql'
+    Get-Text 'DEMO\M06\local\11-enable-rcsi.sql'
+    Get-Text 'DEMO\M06\local\12-isolation-rcsi-cleanup.sql'
+) -join "`n"
 $m08 = Get-Text 'DEMO\M08\common\01-product-api.sql'
 $m08Config = Get-Text 'DEMO\M08\common\dab-config.json'
 $m09 = Get-Text 'DEMO\M09\common\01-review-data.sql'
@@ -143,7 +184,7 @@ CREATE JSON INDEX IX_JsonProbe_Payload ON dbo.JsonProbe(Payload);
 UPDATE dbo.JsonProbe SET Payload.modify('$.name', 'summit') WHERE Id = 1;
 SELECT CASE WHEN JSON_VALUE(Payload, '$.name') = 'summit'
                   AND JSON_PATH_EXISTS(Payload, '$.tags[0]') = 1
-                  AND JSON_CONTAINS(Payload, '"road"', '$.tags') = 1
+                  AND JSON_CONTAINS(Payload, 'road', '$.tags[*]') = 1
             THEN 'PASS' ELSE 'FAIL' END
 FROM dbo.JsonProbe WHERE Id = 1;
 "@ | ForEach-Object { Assert-Scalar -Label 'Native json operations' -Expected 'PASS' -Actual $_ }
@@ -157,7 +198,7 @@ ALTER DATABASE [$probeDatabase] ADD FILE (NAME=N'ProbeMemoryFile', FILENAME=N'$e
 "@ | Out-Null
     Invoke-Query -Database $probeDatabase -Query @"
 CREATE TABLE dbo.MemoryProbe (Id int NOT NULL PRIMARY KEY NONCLUSTERED, Value nvarchar(20) NOT NULL) WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_AND_DATA);
-CREATE TABLE dbo.LedgerProbe (Id int NOT NULL PRIMARY KEY, Value nvarchar(20) NOT NULL) WITH (LEDGER = ON);
+CREATE TABLE dbo.LedgerProbe (Id int NOT NULL PRIMARY KEY, Value nvarchar(20) NOT NULL) WITH (SYSTEM_VERSIONING = ON, LEDGER = ON);
 CREATE SEQUENCE dbo.ProbeSequence AS int START WITH 1 INCREMENT BY 1;
 INSERT dbo.MemoryProbe VALUES (NEXT VALUE FOR dbo.ProbeSequence, N'memory');
 INSERT dbo.LedgerProbe VALUES (1, N'ledger');
@@ -169,18 +210,23 @@ SELECT CASE WHEN (SELECT COUNT(*) FROM dbo.MemoryProbe) = 1
     $ftsInstalled = Get-Scalar -Database 'master' -Query "SELECT CONVERT(varchar(1), FULLTEXTSERVICEPROPERTY('IsFullTextInstalled'));"
     Write-Host "PolyBase installed: $polyBaseInstalled; Full-Text installed: $ftsInstalled"
     $engineVersion = Get-Scalar -Database 'master' -Query "SELECT CONVERT(varchar(128), SERVERPROPERTY('ProductVersion'));"
-    foreach ($package in 'mssql-server-fts', 'mssql-server-polybase') {
-        $packageVersion = (& docker exec $Container dpkg-query -W "-f=`${Version}" $package 2>$null | Out-String).Trim()
-        $packageEngineVersion = $packageVersion -replace '-\d+$', ''
-        if ([string]::IsNullOrWhiteSpace($packageVersion)) {
-            Add-Failure "$package is not installed in '$Container'."
+    if ($polyBaseInstalled -eq '1' -or $ftsInstalled -eq '1') {
+        foreach ($package in 'mssql-server-fts', 'mssql-server-polybase') {
+            $packageVersion = (& docker exec $Container dpkg-query -W "-f=`${Version}" $package 2>$null | Out-String).Trim()
+            $packageEngineVersion = $packageVersion -replace '-\d+$', ''
+            if ([string]::IsNullOrWhiteSpace($packageVersion)) {
+                Add-Failure "$package is not installed in '$Container'."
+            }
+            elseif ($packageEngineVersion -ne $engineVersion) {
+                Add-Failure "$package version '$packageVersion' is not compatible with SQL engine version '$engineVersion'."
+            }
+            else {
+                Write-Host "$package version: $packageVersion (compatible with SQL engine $engineVersion)"
+            }
         }
-        elseif ($packageEngineVersion -ne $engineVersion) {
-            Add-Failure "$package version '$packageVersion' is not compatible with SQL engine version '$engineVersion'."
-        }
-        else {
-            Write-Host "$package version: $packageVersion (compatible with SQL engine $engineVersion)"
-        }
+    }
+    else {
+        Write-Host "SKIP: '$Container' does not use the custom FTS/PolyBase image." -ForegroundColor Yellow
     }
 
     # M03 JSON output/aggregate/shredding, plus M11 single-object JSON output.
@@ -211,11 +257,35 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.database_permissions WHERE grantee_pr
 
     # M06 isolation and Query Store force/unforce lifecycle.
     Invoke-Query -Database $probeDatabase -Query @"
-ALTER DATABASE CURRENT SET QUERY_STORE = ON;
+ALTER DATABASE CURRENT SET QUERY_STORE = ON
+(
+    OPERATION_MODE = READ_WRITE,
+    QUERY_CAPTURE_MODE = ALL
+);
+ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON;
+"@ | Out-Null
+    Invoke-Query -Database $probeDatabase -Query @"
 SET TRANSACTION ISOLATION LEVEL SNAPSHOT;
-SELECT COUNT(*) FROM dbo.JsonProbe WHERE Id = 1;
-DECLARE @queryId bigint = (SELECT TOP (1) q.query_id FROM sys.query_store_query AS q ORDER BY q.query_id DESC);
-DECLARE @planId bigint = (SELECT TOP (1) p.plan_id FROM sys.query_store_plan AS p WHERE p.query_id = @queryId ORDER BY p.plan_id DESC);
+DECLARE @rowCount int;
+SELECT @rowCount = COUNT(*) FROM dbo.JsonProbe WHERE Id = 1 /* DP800 feature coverage Query Store probe */;
+"@ | Out-Null
+    Invoke-Query -Database $probeDatabase -Query @"
+EXEC sys.sp_query_store_flush_db;
+DECLARE @queryId bigint =
+(
+    SELECT TOP (1) q.query_id
+    FROM sys.query_store_query AS q
+    INNER JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
+    WHERE qt.query_sql_text LIKE N'%DP800 feature coverage Query Store probe%'
+    ORDER BY q.query_id DESC
+);
+DECLARE @planId bigint =
+(
+    SELECT TOP (1) p.plan_id
+    FROM sys.query_store_plan AS p
+    WHERE p.query_id = @queryId
+    ORDER BY p.plan_id DESC
+);
 IF @queryId IS NOT NULL AND @planId IS NOT NULL
 BEGIN
     EXEC sys.sp_query_store_force_plan @query_id = @queryId, @plan_id = @planId;
@@ -228,7 +298,9 @@ SELECT CASE WHEN @queryId IS NOT NULL AND @planId IS NOT NULL THEN 'PASS' ELSE '
     Invoke-Query -Database $probeDatabase -Query @"
 CREATE TABLE dbo.ParentProbe (Id int NOT NULL PRIMARY KEY);
 CREATE TABLE dbo.ChildProbe (Id int NOT NULL PRIMARY KEY, ParentId int NOT NULL REFERENCES dbo.ParentProbe(Id));
+GO
 CREATE OR ALTER PROCEDURE dbo.usp_ProbeEntity AS SELECT COUNT(*) AS ParentCount FROM dbo.ParentProbe;
+GO
 EXEC sys.sp_cdc_enable_db;
 EXEC sys.sp_cdc_enable_table @source_schema=N'dbo', @source_name=N'ChildProbe', @role_name=NULL;
 SELECT CASE WHEN OBJECT_ID(N'dbo.usp_ProbeEntity', N'P') IS NOT NULL

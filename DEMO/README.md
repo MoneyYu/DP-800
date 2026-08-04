@@ -30,9 +30,19 @@ The bootstrap provisions eight domain schemas inside `AdventureGearAI`:
 | `search` | M10 search documents built from catalog products and customer reviews. |
 | `ai` | M09 embedding documents and the M11 RAG prompt/procedure surface. |
 
-The canonical seed (created once by the bootstrap) is a small AdventureGear
-catalog: bikes, components, accessories, clothing, and navigation products, their
-customers, orders, and reviews. Modules extend this core; they never recreate it.
+The canonical seed (created once by the bootstrap) has **10 categories, 150
+products, 120 customers, 800 orders, 2,400 order items, and 500 reviews**.
+Modules extend this core; they never recreate it. This deterministic data volume
+is independent of feature detection: native `json` and JSON index operations
+can be taught from the same seed even when In-Memory OLTP, Ledger, Sequence,
+PolyBase, Full-Text Search, or another installed feature is unavailable.
+
+M01 adds native JSON, a preview SQL Server 2025 JSON index, In-Memory OLTP,
+Ledger, Sequence, and feature-detected PolyBase external metadata. Its reset
+keeps the memory-optimized filegroup/container (removing it can hang a
+container) and may leave an engine-managed dropped-ledger table after a Ledger
+drop; both are intentional. Use the [custom FTS/PolyBase Docker image](docker/README.md)
+when Full-Text Search or PolyBase is needed.
 
 ## Local connection
 
@@ -155,7 +165,7 @@ automatically deleted).
 
 | Module | Local SQL Server 2025 | Azure path |
 |---|---|---|
-| M01 objects | Temporal price, indexed JSON projection, partitioning, graph over `catalog` | Same core syntax; service-tier/storage choices differ |
+| M01 objects | Native JSON/preview JSON index, temporal, In-Memory, Ledger, Sequence, partitioning, graph, and feature-detected PolyBase over `catalog` | Same core syntax; service-tier/storage choices differ |
 | M02 programmability | Views, procedures, functions, triggers in `sales` | Same core objects |
 | M03 advanced T-SQL | CTE, windows, JSON, fuzzy, graph, error handling; regex detected | Azure SQL supports the documented regex surface by service/version |
 | M04 AI-assisted workflow | Offline prompt/review exercise over `sales`/`customer`; no Copilot API dependency | Use approved Copilot/Fabric tooling and identity controls |

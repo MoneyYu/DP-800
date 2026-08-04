@@ -16,7 +16,7 @@ pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 6
 The runner runs `common/01-workload.sql` then `local/01-plans-query-store-dmvs.sql`
 against AdventureGearAI. Both are idempotent; add `-Force` to re-run.
 
-## Interactive concurrency scripts (not run by the runner)
+## Interactive concurrency and plan scripts (not run by the runner)
 
 The blocking and deadlock demos require multiple simultaneous sessions and are
 **intentionally excluded** from the runner manifest. Run them by hand against
@@ -27,5 +27,28 @@ AdventureGearAI:
 - Deadlock: run `local/05-deadlock-session-a.sql` and
   `local/06-deadlock-session-b.sql` simultaneously.
 
-All scripts target the schema-qualified `ops.PerformanceOrders` object. See
+The isolation/RCSI comparison deliberately uses a marked disposable database,
+not AdventureGearAI. Start the probe, then use two sessions for
+`09-isolation-writer.sql` and `10-isolation-reader.sql`; run
+`11-enable-rcsi.sql` and repeat the two-session comparison, then clean up with
+`12-isolation-rcsi-cleanup.sql`:
+
+```powershell
+pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M06/local/07-isolation-rcsi-probe.sql
+```
+
+The Query Store plan-forcing demonstration is also manual because it captures,
+forces, verifies, and unforces a plan while restoring the previous capture mode:
+
+```powershell
+pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M06/local/08-query-store-plan-forcing.sql
+```
+
+The isolation comparison uses `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`;
+the plan demo calls `sp_query_store_force_plan` only after it captures an
+eligible plan.
+
+Local SQL Server requires the RCSI setting to be enabled on the disposable
+database for the second comparison; Azure SQL Database commonly uses
+row-versioning defaults, but the script still reports its actual setting. See
 `azure/README.md` for platform differences.

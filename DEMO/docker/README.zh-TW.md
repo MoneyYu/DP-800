@@ -1,5 +1,7 @@
 # SQL Server 2025 Full-Text 與 PolyBase 示範映像
 
+繁體中文 | [English](README.md)
+
 此映像是 DP-800 本機示範所需功能的官方映像式作法。容器建立後，沒有
 SQL Server 環境變數可安裝或啟用 Full-Text Search (FTS) 或 PolyBase；請改用
 此自訂映像。

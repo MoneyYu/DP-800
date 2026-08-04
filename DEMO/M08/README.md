@@ -15,4 +15,9 @@ data (no duplicate `ApiProducts`/`ApiCategories` tables). `common/dab-config.jso
 exposes those views through REST and GraphQL and reads its connection string
 from the `DATABASE_CONNECTION_STRING` environment variable only.
 
+The setup feature-detects and enables CDC for its owned product capture where
+the platform permits it. The DAB configuration demonstrates cache settings,
+entity relationships, and a stored-procedure entity without placing the
+connection string in source control.
+
 Follow `local/README.md` for local DAB and `azure/README.md` for managed hosting differences.

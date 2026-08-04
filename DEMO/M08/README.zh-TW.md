@@ -10,4 +10,8 @@ pwsh -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 8
 
 執行器會執行 `common/01-product-api.sql`，它會在正規 `catalog`/`customer` 領域資料上建立唯讀的 `api.Categories`、`api.Products`、`api.ProductCatalog` 及 `api.InventoryAvailability` 檢視表（不會建立重複的 `ApiProducts`/`ApiCategories` 資料表）。`common/dab-config.json` 會透過 REST 與 GraphQL 公開這些檢視表，且只從目前處理序的 `DATABASE_CONNECTION_STRING` 環境變數讀取連接字串；請勿將它保存至設定檔、存放庫或殼層歷程記錄，並保持 API 設定不變。
 
+設定會在平台允許時 feature-detect 並為其擁有的產品 capture 啟用 CDC。DAB 設定示範 cache
+設定、entity relationships 和 stored-procedure entity，且不會將 connection string 放入
+source control。
+
 請參閱 `local/README.md` 了解本機 DAB，以及 `azure/README.md` 了解受控主機差異。
