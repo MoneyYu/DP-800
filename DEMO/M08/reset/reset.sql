@@ -58,35 +58,64 @@ GO
 只拆除模組專屬檢視表。標準 catalog 核心絕不會被卸除。
 */
 DECLARE @DisableCdcDatabase bit = 0;
+DECLARE @M08CaptureInstance sysname;
+DECLARE @M08CaptureTableObjectId int;
+DECLARE @M08CaptureTableCreatedAt datetime;
 IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
-    SELECT @DisableCdcDatabase = DatabaseCdcEnabledByModule
+   AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NOT NULL
+   AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NOT NULL
+   AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NOT NULL
+    SELECT
+        @DisableCdcDatabase = DatabaseCdcEnabledByModule,
+        @M08CaptureInstance = M08CaptureInstance,
+        @M08CaptureTableObjectId = M08CaptureTableObjectId,
+        @M08CaptureTableCreatedAt = M08CaptureTableCreatedAt
     FROM api.CdcRuntimeStatus
     WHERE CdcRuntimeStatusID = 1;
 
-IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+IF @M08CaptureInstance IS NOT NULL
+   AND EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
 BEGIN
-    DECLARE @CaptureInstance sysname;
-    DECLARE M08CdcCursor CURSOR LOCAL FAST_FORWARD FOR
-    SELECT capture_instance
-    FROM cdc.change_tables
-    WHERE source_object_id = OBJECT_ID(N'catalog.Products');
+    /* cdc.change_tables does not exist when database CDC is disabled. Query it
+       dynamically only after the database-level guard has succeeded. */
+    DECLARE @M08CaptureExists bit = 0;
+    DECLARE @RemainingCaptureCount int = 0;
+    EXEC sys.sp_executesql
+        N'
+        SELECT @CaptureExists = CONVERT(bit, CASE WHEN EXISTS
+        (
+            SELECT 1
+            FROM cdc.change_tables
+            WHERE source_object_id = OBJECT_ID(N''catalog.Products'')
+              AND capture_instance = @CaptureInstance
+              AND OBJECT_ID(N''cdc.'' + capture_instance + N''_CT'') = @CaptureTableObjectId
+              AND EXISTS
+              (
+                  SELECT 1
+                  FROM sys.objects AS cdcTable
+                  WHERE cdcTable.object_id = @CaptureTableObjectId
+                    AND cdcTable.create_date = @CaptureTableCreatedAt
+              )
+        ) THEN 1 ELSE 0 END);
+        SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
+        N'@CaptureInstance sysname, @CaptureTableObjectId int, @CaptureTableCreatedAt datetime, @CaptureExists bit OUTPUT, @RemainingCount int OUTPUT',
+        @CaptureInstance = @M08CaptureInstance,
+        @CaptureTableObjectId = @M08CaptureTableObjectId,
+        @CaptureTableCreatedAt = @M08CaptureTableCreatedAt,
+        @CaptureExists = @M08CaptureExists OUTPUT,
+        @RemainingCount = @RemainingCaptureCount OUTPUT;
 
-    OPEN M08CdcCursor;
-    FETCH NEXT FROM M08CdcCursor INTO @CaptureInstance;
-    WHILE @@FETCH_STATUS = 0
+    IF @M08CaptureExists = 1
     BEGIN
         EXEC sys.sp_cdc_disable_table
             @source_schema = N'catalog',
             @source_name = N'Products',
-            @capture_instance = @CaptureInstance;
-        FETCH NEXT FROM M08CdcCursor INTO @CaptureInstance;
-    END;
-    CLOSE M08CdcCursor;
-    DEALLOCATE M08CdcCursor;
+            @capture_instance = @M08CaptureInstance;
 
-    IF @DisableCdcDatabase = 1
-       AND NOT EXISTS (SELECT 1 FROM cdc.change_tables)
-        EXEC sys.sp_cdc_disable_db;
+        IF @DisableCdcDatabase = 1
+           AND @RemainingCaptureCount = 1
+            EXEC sys.sp_cdc_disable_db;
+    END;
 END;
 GO
 

@@ -36,21 +36,41 @@ BEGIN
         SqlAgentAvailable bit NOT NULL,
         DatabaseCdcEnabledByModule bit NOT NULL,
         ProductCaptureEnabled bit NOT NULL,
+        M08CaptureInstance sysname NULL,
+        M08CaptureTableObjectId int NULL,
+        M08CaptureTableCreatedAt datetime NULL,
         Behavior nvarchar(1000) NOT NULL
     );
 END;
+GO
+
+IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NULL
+    ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureInstance sysname NULL;
+IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NULL
+    ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureTableObjectId int NULL;
+IF COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NULL
+    ALTER TABLE api.CdcRuntimeStatus ADD M08CaptureTableCreatedAt datetime NULL;
 GO
 
 DECLARE @engineEdition int = CONVERT(int, SERVERPROPERTY('EngineEdition'));
 DECLARE @sqlAgentAvailable bit = 0;
 DECLARE @databaseCdcEnabledByModule bit = 0;
 DECLARE @productCaptureEnabled bit = 0;
+DECLARE @m08CaptureInstance sysname;
+DECLARE @m08CaptureTableObjectId int;
+DECLARE @m08CaptureTableCreatedAt datetime;
 DECLARE @behavior nvarchar(1000);
 
 /* Preserve the ownership marker across idempotent re-runs. Without it, a
    second run would forget that M08, rather than a pre-existing feature, enabled
    CDC at database scope. */
 SELECT @databaseCdcEnabledByModule = DatabaseCdcEnabledByModule
+FROM api.CdcRuntimeStatus
+WHERE CdcRuntimeStatusID = 1;
+SELECT
+    @m08CaptureInstance = M08CaptureInstance,
+    @m08CaptureTableObjectId = M08CaptureTableObjectId,
+    @m08CaptureTableCreatedAt = M08CaptureTableCreatedAt
 FROM api.CdcRuntimeStatus
 WHERE CdcRuntimeStatusID = 1;
 
@@ -82,6 +102,24 @@ BEGIN TRY
         SET @databaseCdcEnabledByModule = 1;
     END;
 
+    IF @m08CaptureInstance IS NOT NULL
+       AND NOT EXISTS
+       (
+           SELECT 1
+           FROM cdc.change_tables AS ct
+           INNER JOIN sys.objects AS cdcTable
+               ON cdcTable.object_id = OBJECT_ID(N'cdc.' + ct.capture_instance + N'_CT')
+           WHERE ct.source_object_id = OBJECT_ID(N'catalog.Products')
+             AND ct.capture_instance = @m08CaptureInstance
+             AND cdcTable.object_id = @m08CaptureTableObjectId
+             AND cdcTable.create_date = @m08CaptureTableCreatedAt
+       )
+    BEGIN
+        SET @m08CaptureInstance = NULL;
+        SET @m08CaptureTableObjectId = NULL;
+        SET @m08CaptureTableCreatedAt = NULL;
+    END;
+
     IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
        AND NOT EXISTS
        (
@@ -89,11 +127,22 @@ BEGIN TRY
            FROM cdc.change_tables
            WHERE source_object_id = OBJECT_ID(N'catalog.Products')
        )
+    BEGIN
         EXEC sys.sp_cdc_enable_table
             @source_schema = N'catalog',
             @source_name = N'Products',
             @role_name = NULL,
             @supports_net_changes = 1;
+
+        SELECT
+            @m08CaptureInstance = ct.capture_instance,
+            @m08CaptureTableObjectId = cdcTable.object_id,
+            @m08CaptureTableCreatedAt = cdcTable.create_date
+        FROM cdc.change_tables AS ct
+        INNER JOIN sys.objects AS cdcTable
+            ON cdcTable.object_id = OBJECT_ID(N'cdc.' + ct.capture_instance + N'_CT')
+        WHERE ct.source_object_id = OBJECT_ID(N'catalog.Products');
+    END;
 
     IF EXISTS
     (
@@ -124,6 +173,9 @@ INSERT api.CdcRuntimeStatus
     SqlAgentAvailable,
     DatabaseCdcEnabledByModule,
     ProductCaptureEnabled,
+    M08CaptureInstance,
+    M08CaptureTableObjectId,
+    M08CaptureTableCreatedAt,
     Behavior
 )
 VALUES
@@ -134,6 +186,9 @@ VALUES
     @sqlAgentAvailable,
     @databaseCdcEnabledByModule,
     @productCaptureEnabled,
+    @m08CaptureInstance,
+    @m08CaptureTableObjectId,
+    @m08CaptureTableCreatedAt,
     @behavior
 );
 GO
@@ -224,6 +279,9 @@ SELECT
     SqlAgentAvailable,
     DatabaseCdcEnabledByModule,
     ProductCaptureEnabled,
+    M08CaptureInstance,
+    M08CaptureTableObjectId,
+    M08CaptureTableCreatedAt,
     Behavior
 FROM api.CdcRuntimeStatus;
 GO

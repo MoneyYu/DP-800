@@ -57,6 +57,12 @@ GO
 --------------------------------------------------------------------------- */
 DECLARE @M06QueryId bigint;
 DECLARE @M06PlanId bigint;
+DECLARE @M06PriorQueryCaptureMode nvarchar(60);
+IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
+    SELECT @M06PriorQueryCaptureMode = PriorQueryCaptureMode
+    FROM ops.M06QueryStoreRuntimeState
+    WHERE M06QueryStoreRuntimeStateID = 1;
+
 DECLARE M06ForcedPlanCursor CURSOR LOCAL FAST_FORWARD FOR
 SELECT q.query_id, p.plan_id
 FROM sys.query_store_query AS q
@@ -80,9 +86,17 @@ BEGIN
 END;
 CLOSE M06ForcedPlanCursor;
 DEALLOCATE M06ForcedPlanCursor;
+
+IF @M06PriorQueryCaptureMode IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
+BEGIN
+    DECLARE @M06RestoreQueryCaptureMode nvarchar(max) =
+        N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @M06PriorQueryCaptureMode + N');';
+    EXEC sys.sp_executesql @M06RestoreQueryCaptureMode;
+END;
 GO
 
 DROP TABLE IF EXISTS ops.PerformanceOrders;
+DROP TABLE IF EXISTS ops.M06QueryStoreRuntimeState;
 GO
 
 /* ---------------------------------------------------------------------------

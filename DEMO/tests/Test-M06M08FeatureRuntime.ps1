@@ -9,7 +9,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
-$probeDatabase = 'DP800_M06M08FeatureProbe'
+$probeDatabase = "DP800_M06M08FeatureProbe_$([guid]::NewGuid().ToString('N'))"
+$collisionDatabase = "DP800_M06_IsolationProbe_Collision_$([guid]::NewGuid().ToString('N'))"
 $failures = [System.Collections.Generic.List[string]]::new()
 
 function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
@@ -48,7 +49,9 @@ $m08Api = Get-Source 'DEMO\M08\common\01-product-api.sql'
 $m08Reset = Get-Source 'DEMO\M08\reset\reset.sql'
 $dabConfig = Get-Source 'DEMO\M08\common\dab-config.json'
 
-Assert-Source $m06Isolation '(?i)CREATE\s+DATABASE\s+\[?DP800_M06_IsolationProbe' 'M06 isolation demo must create its dedicated probe database.'
+Assert-Source $m06Isolation '(?i)NEWID\s*\(' 'M06 isolation demo must generate a unique probe database name.'
+Assert-Source $m06Isolation '(?i)sp_addextendedproperty' 'M06 isolation demo must add a database ownership marker.'
+Assert-Source $m06Isolation '(?i)DP800\.M06\.IsolationProbe' 'M06 isolation demo must use its ownership marker consistently.'
 Assert-Source $m06Isolation '(?i)READ_COMMITTED_SNAPSHOT' 'M06 isolation demo must set RCSI only on its probe database.'
 Assert-Source $m06Isolation '(?i)SET\s+TRANSACTION\s+ISOLATION\s+LEVEL\s+READ\s+COMMITTED' 'M06 isolation demo must execute READ COMMITTED.'
 Assert-Source $m06Isolation '(?i)SERVERPROPERTY\s*\(\s*''EngineEdition''\s*\)' 'M06 isolation demo must emit the local/Azure boundary.'
@@ -56,15 +59,20 @@ Assert-Source $m06PlanForcing '(?i)sp_query_store_force_plan' 'M06 plan forcing 
 Assert-Source $m06PlanForcing '(?i)is_forced_plan' 'M06 plan forcing demo must verify the forced state.'
 Assert-Source $m06PlanForcing '(?i)sp_query_store_unforce_plan' 'M06 plan forcing demo must clean up a forced plan.'
 Assert-Source $m06PlanForcing '(?i)(only|one).{0,80}plan|plan.{0,80}(only|one)' 'M06 plan forcing demo must explain the single-plan outcome.'
+Assert-Source $m06PlanForcing '(?i)query_capture_mode_desc' 'M06 plan forcing demo must capture the prior Query Store capture mode.'
+Assert-Source $m06PlanForcing '(?i)M06QueryStoreRuntimeState' 'M06 plan forcing demo must persist its prior capture mode for reset recovery.'
 Assert-Source $m06Reset '(?i)sp_query_store_unforce_plan' 'M06 reset must unforce M06 Query Store plans.'
+Assert-Source $m06Reset '(?i)M06QueryStoreRuntimeState' 'M06 reset must restore the Query Store capture mode recorded by M06.'
 
 Assert-Source $m08Api '(?i)sp_cdc_enable_db' 'M08 must enable CDC at database scope.'
 Assert-Source $m08Api '(?i)sp_cdc_enable_table' 'M08 must enable CDC for the product source table.'
+Assert-Source $m08Api '(?i)M08CaptureInstance' 'M08 must persist the exact CDC capture instance it creates.'
 Assert-Source $m08Api '(?i)dm_server_services|SQL Server Agent' 'M08 must record SQL Agent availability.'
 Assert-Source $m08Api '(?i)CREATE\s+OR\s+ALTER\s+VIEW\s+api\.Products' 'M08 must create the Product read model.'
 Assert-Source $m08Api '(?i)CREATE\s+OR\s+ALTER\s+PROCEDURE\s+api\.GetProductsByCategory' 'M08 must create the safe procedure source.'
 Assert-Source $m08Reset '(?i)sp_cdc_disable_table' 'M08 reset must disable the owned CDC table capture.'
 Assert-Source $m08Reset '(?i)sp_cdc_disable_db' 'M08 reset must disable CDC when M08 enabled it.'
+Assert-Source $m08Reset '(?i)M08CaptureInstance' 'M08 reset must target only M08''s recorded CDC capture instance.'
 Assert-Source $m08Reset '(?i)DROP\s+PROCEDURE.*GetProductsByCategory' 'M08 reset must remove the owned procedure.'
 
 $dab = $null
@@ -115,19 +123,54 @@ function Invoke-Query {
     param([string]$Database, [string]$Query)
     $output = & $sqlcmd.Source -S $Server -U $User -d $Database -Q $Query -h -1 -W -b -C -I -x 2>&1
     if ($LASTEXITCODE -ne 0) { throw "sqlcmd query failed against '$Database': $($output -join ' ')" }
-    return @($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
+    return @($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' -and $_ -notmatch '^\(\d+ rows? affected\)$' })
+}
+function Invoke-SqlFile {
+    param([string]$Database, [string]$RelativePath)
+    $path = Join-Path $repoRoot $RelativePath
+    $output = & $sqlcmd.Source -S $Server -U $User -d $Database -i $path -h -1 -W -b -C -I -x 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "sqlcmd file '$RelativePath' failed against '$Database': $($output -join ' ')" }
+    return @($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' -and $_ -notmatch '^\(\d+ rows? affected\)$' })
+}
+function Remove-TestDatabase {
+    param([string]$Database)
+    $escapedDatabase = $Database.Replace("'", "''")
+    $result = @(Invoke-Query -Database master -Query @"
+DECLARE @owned bit = 0;
+IF DB_ID(N'$escapedDatabase') IS NOT NULL
+BEGIN
+    DECLARE @checkSql nvarchar(max) = N'USE ' + QUOTENAME(N'$escapedDatabase') + N';
+        IF EXISTS
+        (
+            SELECT 1
+            FROM sys.extended_properties
+            WHERE class = 0
+              AND name = N''DP800.Test.M06M08FeatureRuntime''
+              AND value = N''owned''
+        )
+            SELECT @markerPresent = CONVERT(bit, 1);';
+    EXEC sys.sp_executesql @checkSql, N'@markerPresent bit OUTPUT', @markerPresent = @owned OUTPUT;
+END;
+SELECT CONVERT(int, @owned);
+"@)
+    if ($result -contains '1') {
+        Invoke-Query -Database master -Query "ALTER DATABASE [$Database] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$Database];" | Out-Null
+    }
 }
 
 $originalPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
+$fixtureEnabledDatabaseCdc = $false
+$fixtureCreatedCapture = $false
+$fixtureCaptureInstance = $null
 try {
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
+    Invoke-Query -Database master -Query "CREATE DATABASE [$probeDatabase];" | Out-Null
+    Invoke-Query -Database $probeDatabase -Query @"
+EXEC sys.sp_addextendedproperty
+    @name = N'DP800.Test.M06M08FeatureRuntime',
+    @value = N'owned';
+"@ | Out-Null
     Invoke-Query -Database master -Query @"
-IF DB_ID(N'$probeDatabase') IS NOT NULL
-BEGIN
-    ALTER DATABASE [$probeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE [$probeDatabase];
-END;
-CREATE DATABASE [$probeDatabase];
 ALTER DATABASE [$probeDatabase] SET READ_COMMITTED_SNAPSHOT OFF WITH ROLLBACK IMMEDIATE;
 SELECT CASE WHEN is_read_committed_snapshot_on = 0 THEN 'PASS' ELSE 'FAIL' END
 FROM sys.databases WHERE name = N'$probeDatabase';
@@ -139,6 +182,62 @@ FROM sys.databases WHERE name = N'$probeDatabase';
     }
     $rcsiResults = @(Invoke-Query -Database master -Query "SELECT CASE WHEN is_read_committed_snapshot_on = 1 THEN 'PASS' ELSE 'FAIL' END FROM sys.databases WHERE name = N'$probeDatabase';")
     Assert-True ($rcsiResults -contains 'PASS') 'M06 probe must retain RCSI after its transition.'
+
+    Invoke-Query -Database master -Query "CREATE DATABASE [$collisionDatabase];" | Out-Null
+    Invoke-Query -Database $collisionDatabase -Query @"
+EXEC sys.sp_addextendedproperty
+    @name = N'DP800.Test.M06M08FeatureRuntime',
+    @value = N'owned';
+"@ | Out-Null
+    Invoke-SqlFile -Database master -RelativePath 'DEMO\M06\local\07-isolation-rcsi-probe.sql' | Out-Null
+    Invoke-SqlFile -Database master -RelativePath 'DEMO\M06\local\10-isolation-reader.sql' | Out-Null
+    Invoke-SqlFile -Database master -RelativePath 'DEMO\M06\local\11-enable-rcsi.sql' | Out-Null
+    Invoke-SqlFile -Database master -RelativePath 'DEMO\M06\local\12-isolation-rcsi-cleanup.sql' | Out-Null
+    $collisionResults = @(Invoke-Query -Database master -Query "SELECT CASE WHEN DB_ID(N'$collisionDatabase') IS NOT NULL THEN 'PASS' ELSE 'FAIL' END;")
+    Assert-True ($collisionResults -contains 'PASS') 'M06 isolation cleanup must preserve an unmarked colliding database.'
+
+    Invoke-Query -Database AdventureGearAI -Query @"
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = AUTO);
+SELECT query_capture_mode_desc
+FROM sys.database_query_store_options;
+"@ | Out-Null
+    $priorCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\common\01-workload.sql' | Out-Null
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\local\08-query-store-plan-forcing.sql' | Out-Null
+    $postDemoCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
+    Assert-True (($postDemoCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 plan-forcing demo must restore the prior Query Store capture mode.'
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
+    $postResetCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
+    Assert-True (($postResetCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 reset must preserve the pre-demo Query Store capture mode.'
+
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
+    $cdcInitial = @(Invoke-Query -Database AdventureGearAI -Query "SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID();")
+    if (($cdcInitial | Select-Object -First 1) -eq '0') {
+        Invoke-Query -Database AdventureGearAI -Query 'EXEC sys.sp_cdc_enable_db;' | Out-Null
+        $fixtureEnabledDatabaseCdc = $true
+    }
+    $fixtureCaptureInstance = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT capture_instance
+FROM cdc.change_tables
+WHERE source_object_id = OBJECT_ID(N'catalog.Products');
+"@ | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($fixtureCaptureInstance)) {
+        Invoke-Query -Database AdventureGearAI -Query "EXEC sys.sp_cdc_enable_table @source_schema = N'catalog', @source_name = N'Products', @role_name = NULL, @supports_net_changes = 1;" | Out-Null
+        $fixtureCaptureInstance = @(Invoke-Query -Database AdventureGearAI -Query "SELECT capture_instance FROM cdc.change_tables WHERE source_object_id = OBJECT_ID(N'catalog.Products');" | Select-Object -First 1)
+        $fixtureCreatedCapture = $true
+    }
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\common\01-product-api.sql' | Out-Null
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
+    $cdcPreserved = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM cdc.change_tables
+    WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+      AND capture_instance = N'$fixtureCaptureInstance'
+) THEN N'PASS' ELSE N'FAIL' END;
+"@)
+    Assert-True ($cdcPreserved -contains 'PASS') "M08 reset must preserve pre-existing CDC capture '$fixtureCaptureInstance'; observed '$($cdcPreserved -join ', ')'."
 
     $planForcingResults = @(Invoke-Query -Database $probeDatabase -Query @"
 ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
@@ -223,13 +322,29 @@ catch {
 }
 finally {
     try {
-        Invoke-Query -Database master -Query @"
-IF DB_ID(N'$probeDatabase') IS NOT NULL
-BEGIN
-    ALTER DATABASE [$probeDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE [$probeDatabase];
-END;
+        if ($fixtureCreatedCapture -and -not [string]::IsNullOrWhiteSpace($fixtureCaptureInstance)) {
+            Invoke-Query -Database AdventureGearAI -Query @"
+IF EXISTS
+(
+    SELECT 1
+    FROM cdc.change_tables
+    WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+      AND capture_instance = N'$fixtureCaptureInstance'
+)
+    EXEC sys.sp_cdc_disable_table
+        @source_schema = N'catalog',
+        @source_name = N'Products',
+        @capture_instance = N'$fixtureCaptureInstance';
 "@ | Out-Null
+        }
+        if ($fixtureEnabledDatabaseCdc) {
+            Invoke-Query -Database AdventureGearAI -Query @"
+IF NOT EXISTS (SELECT 1 FROM cdc.change_tables)
+    EXEC sys.sp_cdc_disable_db;
+"@ | Out-Null
+        }
+        Remove-TestDatabase -Database $probeDatabase
+        Remove-TestDatabase -Database $collisionDatabase
     }
     catch {
         Add-Failure "Probe cleanup failed: $($_.Exception.Message)"
