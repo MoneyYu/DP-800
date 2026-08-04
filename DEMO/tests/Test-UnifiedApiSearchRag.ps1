@@ -91,7 +91,7 @@ Assert-Equal -Actual ((Resolve-DemoModuleExecutionPlan -Requested @(7, 8, 9, 10,
 Assert-Equal -Actual ((Resolve-DemoModuleExecutionPlan -Requested 11) -join ',') -Expected '1,9,10,11' -Message 'Direct M11 must resolve M01,M09,M10,M11 in dependency order.'
 Assert-Equal -Actual ((Resolve-DemoModuleExecutionPlan -Requested 7) -join ',') -Expected '1,7' -Message 'M07 depends only on core+M01.'
 
-# --- 4) DAB config parses and sources the api.* domain views ------------------
+# --- 4) DAB config parses and splits relationship and read-model entities -----
 $dabText = Get-Text -Path $dabConfigPath
 $dab = $null
 if ($null -ne $dabText) {
@@ -100,8 +100,8 @@ if ($null -ne $dabText) {
 }
 if ($null -ne $dab) {
     $expectedSources = @{
-        Category              = 'api.Categories'
-        Product               = 'api.Products'
+        Category              = 'catalog.Categories'
+        Product               = 'catalog.Products'
         ProductCatalog        = 'api.ProductCatalog'
         InventoryAvailability = 'api.InventoryAvailability'
     }
@@ -109,8 +109,17 @@ if ($null -ne $dab) {
         $entity = $dab.entities.$entityName
         Assert-True -Condition ($null -ne $entity) -Message "DAB entity '$entityName' is missing."
         if ($null -eq $entity) { continue }
-        Assert-Equal -Actual ([string]$entity.source.object) -Expected $expectedSources[$entityName] -Message "DAB entity '$entityName' must source the domain view."
+        Assert-Equal -Actual ([string]$entity.source.object) -Expected $expectedSources[$entityName] -Message "DAB entity '$entityName' must source its configured DAB contract object."
     }
+    $expectedProductMappings = @{
+        ProductID   = 'id'
+        ProductName = 'name'
+        UnitPrice   = 'price'
+    }
+    foreach ($mappingName in $expectedProductMappings.Keys) {
+        Assert-Equal -Actual ([string]$dab.entities.Product.mappings.$mappingName) -Expected $expectedProductMappings[$mappingName] -Message "DAB Product mapping '$mappingName' must be preserved."
+    }
+    Assert-True -Condition ($null -eq $dab.entities.Product.mappings.PSObject.Properties['UnitsInStock']) -Message 'DAB Product must not map UnitsInStock because catalog.Products does not contain that column.'
     # Connection string must come from the environment, not a literal secret.
     Assert-Equal -Actual ([string]$dab.'data-source'.'connection-string') -Expected "@env('DATABASE_CONNECTION_STRING')" -Message 'DAB connection string must be sourced from the environment only.'
 }

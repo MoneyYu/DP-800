@@ -127,7 +127,7 @@ pwsh -NoProfile -File DEMO/reset/Reset-AdventureGearAI.ps1
 | M05 安全性 | DDM 和 RLS 在 `security` 中執行；檢查/說明 TDE/Always Encrypted | TDE 由平台管理；Entra 和稽核是 Azure 路徑 |
 | M06 效能 | Query Store、計畫、DMV；封鎖/死結指令碼為**互動式**，且排除於執行器之外（需在多個工作階段中手動執行） | 服務層級與 Query Performance Insight 僅限 Azure |
 | M07 CI/CD | SDK SQL 專案會**建置**目標為 `AdventureGearAI` 的 dacpac；可選的本機**發佈**使用無密碼 Entra 設定檔 | GitHub Actions 範例使用存放庫密碼/OIDC |
-| M08 Data API Builder | DAB 透過環境中的本機連接字串提供 `api.*` 檢視表 | 受控識別與 Azure 裝載會另外記載 |
+| M08 Data API Builder | DAB relationship entity 使用 `catalog.Categories`/`catalog.Products`；`api.ProductCatalog` 與 `api.InventoryAvailability` 仍為獨立 read-model entity，確保庫存資訊可用 | 受控識別與 Azure 裝載會另外記載 |
 | M09 模型/內嵌 | 功能偵測 `vector` 與外部模型目錄；沒有已核准端點/認證時，會略過**外部 REST/模型產生** | 受控識別加上 `CREATE EXTERNAL MODEL` 範本 |
 | M10 智慧搜尋 | 安裝/支援時提供全文檢索和精確的 `VECTOR_DISTANCE` 示範；當本機組建缺少**向量索引**介面時，會如實略過 ANN | DiskANN/`VECTOR_SEARCH` 需要受支援的 Azure/預覽設定 |
 | M11 RAG | 從 `search` 建立擷取內容/提示；**外部 REST** 執行會進行功能偵測，且需要已核准的端點認證 | Azure REST 產生路徑使用受控識別和 Azure SQL |

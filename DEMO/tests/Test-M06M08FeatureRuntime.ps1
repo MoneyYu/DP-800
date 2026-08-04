@@ -149,6 +149,12 @@ if ($null -ne $dab) {
     Assert-True (@(Get-OptionalProperty $productCategoryRelationship 'source.fields') -join ',' -eq 'CategoryID') 'DAB Product.category relationship must use CategoryID as its source field.'
     Assert-True (@(Get-OptionalProperty $productCategoryRelationship 'target.fields') -join ',' -eq 'CategoryID') 'DAB Product.category relationship must use Category.CategoryID as its target field.'
     Assert-True ($null -eq (Get-OptionalProperty $productMappings 'CategoryID')) 'DAB Product mappings must leave CategoryID available as a relationship source field.'
+    Assert-True ([string](Get-OptionalProperty $productMappings 'ProductID') -eq 'id') 'DAB Product must preserve the ProductID to id mapping.'
+    Assert-True ([string](Get-OptionalProperty $productMappings 'ProductName') -eq 'name') 'DAB Product must preserve the ProductName to name mapping.'
+    Assert-True ([string](Get-OptionalProperty $productMappings 'UnitPrice') -eq 'price') 'DAB Product must preserve the UnitPrice to price mapping.'
+    Assert-True ($null -eq (Get-OptionalProperty $productMappings 'UnitsInStock')) 'DAB Product must not map UnitsInStock because catalog.Products has no such column.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty (Get-OptionalProperty $dab.entities 'ProductCatalog') 'source') 'object') -eq 'api.ProductCatalog') 'DAB ProductCatalog must retain its api read-model view source.'
+    Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty (Get-OptionalProperty $dab.entities 'InventoryAvailability') 'source') 'object') -eq 'api.InventoryAvailability') 'DAB InventoryAvailability must retain its api read-model view source.'
     Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'type') -eq 'stored-procedure') 'DAB must expose the safe procedure as a stored-procedure entity.'
     Assert-True ([string](Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'object') -eq 'api.GetProductsByCategory') 'DAB stored-procedure entity must use the safe API procedure.'
     $procedureParameters = @(Get-OptionalProperty (Get-OptionalProperty $productsByCategory 'source') 'parameters')

@@ -113,8 +113,8 @@ PRINT N'AdventureGearAI';
     Write-TestFile -Path (Join-Path $m08CommonRoot 'dab-config.json') -Content @'
 {
   "entities": {
-    "Category": { "source": { "object": "api.Categories" } },
-    "Product": { "source": { "object": "api.Products" } },
+    "Category": { "source": { "object": "catalog.Categories" } },
+    "Product": { "source": { "object": "catalog.Products" } },
     "ProductCatalog": { "source": { "object": "api.ProductCatalog" } }
   }
 }

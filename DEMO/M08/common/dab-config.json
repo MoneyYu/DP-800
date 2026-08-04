@@ -37,8 +37,7 @@
       "mappings": {
         "ProductID": "id",
         "ProductName": "name",
-        "UnitPrice": "price",
-        "UnitsInStock": "stockQuantity"
+        "UnitPrice": "price"
       },
       "cache": { "enabled": true, "ttl-seconds": 30 },
       "relationships": {

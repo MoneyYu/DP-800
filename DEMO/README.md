@@ -172,7 +172,7 @@ automatically deleted).
 | M05 security | DDM and RLS execute in `security`; TDE/Always Encrypted are inspected/explained | TDE is platform-managed; Entra and auditing are Azure paths |
 | M06 performance | Query Store, plans, DMVs; blocking/deadlock scripts are **interactive** and excluded from the runner (run by hand in multiple sessions) | Service tiers and Query Performance Insight are Azure-only |
 | M07 CI/CD | SDK SQL project **builds** a dacpac targeting `AdventureGearAI`; optional local **publish** via the passwordless Entra profile | GitHub Actions sample uses repository secrets/OIDC |
-| M08 Data API Builder | DAB serves `api.*` views from a local connection string in the environment | Managed identity and Azure hosting are documented separately |
+| M08 Data API Builder | DAB relationship entities use `catalog.Categories`/`catalog.Products`; `api.ProductCatalog` and `api.InventoryAvailability` remain separate read-model entities so stock stays available | Managed identity and Azure hosting are documented separately |
 | M09 models/embeddings | `vector` and external-model catalog feature-detected; **external REST/model generation** is skipped without an approved endpoint/credential | Managed identity plus `CREATE EXTERNAL MODEL` template |
 | M10 intelligent search | Full-text and exact `VECTOR_DISTANCE` demos when installed/supported; ANN is truthfully skipped when the local build lacks the **vector index** surface | DiskANN/`VECTOR_SEARCH` requires supported Azure/preview configuration |
 | M11 RAG | Builds retrieval context/prompt from `search`; **external REST** execution is feature-detected and needs an approved endpoint credential | Azure REST generation path uses managed identity and Azure SQL |

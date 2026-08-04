@@ -210,6 +210,10 @@ foreach ($requirement in @(
     @{ Text = $m08Config; Pattern = '(?is)"Category"\s*:\s*\{.*?"relationships"\s*:\s*\{.*?"products"\s*:\s*\{.*?"cardinality"\s*:\s*"many".*?"target\.entity"\s*:\s*"Product".*?"source\.fields"\s*:\s*\[\s*"CategoryID"\s*\].*?"target\.fields"\s*:\s*\[\s*"CategoryID"\s*\]'; Message = 'M08 DAB Category.products must be a many relationship to Product on CategoryID.' },
     @{ Text = $m08Config; Pattern = '(?is)"Product"\s*:\s*\{.*?"relationships"\s*:\s*\{.*?"category"\s*:\s*\{.*?"cardinality"\s*:\s*"one".*?"target\.entity"\s*:\s*"Category".*?"source\.fields"\s*:\s*\[\s*"CategoryID"\s*\].*?"target\.fields"\s*:\s*\[\s*"CategoryID"\s*\]'; Message = 'M08 DAB Product.category must be a one relationship to Category on CategoryID.' },
     @{ Text = $m08Config; Pattern = '(?is)"Product"\s*:\s*\{.*?"mappings"\s*:\s*\{(?:(?!CategoryID).)*\}'; Message = 'M08 DAB Product mappings must leave CategoryID available as the relationship source field.' },
+    @{ Text = $m08Config; Pattern = '(?is)"Category"\s*:\s*\{.*?"object"\s*:\s*"catalog\.Categories".*?"type"\s*:\s*"table"'; Message = 'M08 DAB Category must use catalog.Categories as its relationship table source.' },
+    @{ Text = $m08Config; Pattern = '(?is)"Product"\s*:\s*\{.*?"object"\s*:\s*"catalog\.Products".*?"type"\s*:\s*"table".*?"ProductID"\s*:\s*"id".*?"ProductName"\s*:\s*"name".*?"UnitPrice"\s*:\s*"price"'; Message = 'M08 DAB Product must use catalog.Products and preserve its supported mappings.' },
+    @{ Text = $m08Config; Pattern = '(?is)"ProductCatalog"\s*:\s*\{.*?"object"\s*:\s*"api\.ProductCatalog".*?"type"\s*:\s*"view"'; Message = 'M08 DAB ProductCatalog must retain its api read-model view source.' },
+    @{ Text = $m08Config; Pattern = '(?is)"InventoryAvailability"\s*:\s*\{.*?"object"\s*:\s*"api\.InventoryAvailability".*?"type"\s*:\s*"view"'; Message = 'M08 DAB InventoryAvailability must retain its api read-model view source.' },
     @{ Text = $m08Config; Pattern = '(?i)"type"\s*:\s*"stored-procedure"'; Message = 'M08 DAB configuration must expose a stored-procedure entity.' },
     @{ Text = $m08Config; Pattern = '(?is)"type"\s*:\s*"stored-procedure".*?"parameters"\s*:\s*\[\s*\{\s*"name"\s*:\s*"CategoryID"'; Message = 'M08 DAB stored-procedure entity must use the CategoryID parameter without a SQL @ prefix.' },
     @{ Text = "$m09`n$m09Local"; Pattern = '(?i)AI_GENERATE_CHUNKS\s*\('; Message = 'M09 must invoke AI_GENERATE_CHUNKS.' },
@@ -229,6 +233,8 @@ foreach ($requirement in @(
 )) {
     Assert-Present -Text $requirement.Text -Pattern $requirement.Pattern -Message $requirement.Message
 }
+Assert-Absent -Text $m08Config -Pattern '(?i)"UnitsInStock"\s*:' `
+    -Message 'M08 DAB Product must not map UnitsInStock because catalog.Products has no such column.'
 
 # TDE cleanup must read, compare, and drop a test-owned master key in one
 # transactional sqlcmd invocation. The fixtures protect that atomic boundary.
