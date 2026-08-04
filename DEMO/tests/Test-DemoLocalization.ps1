@@ -414,8 +414,8 @@ function Test-CommandSet {
         [string]$LocalizedText
     )
 
-    $englishCommands = Get-RunnablePowerShellCommands -Text $EnglishText
-    $localizedCommands = Get-RunnablePowerShellCommands -Text $LocalizedText
+    $englishCommands = @(Get-RunnablePowerShellCommands -Text $EnglishText)
+    $localizedCommands = @(Get-RunnablePowerShellCommands -Text $LocalizedText)
     $englishRelativePath = Resolve-RepoPath $EnglishPath
     $localizedRelativePath = Resolve-RepoPath $LocalizedPath
 
@@ -451,6 +451,10 @@ function Test-CommandSet {
         }
     }
 }
+
+Test-CommandSet -EnglishPath 'single-command English fixture' -LocalizedPath 'single-command zh-TW fixture' `
+    -EnglishText 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI' `
+    -LocalizedText 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI'
 
 foreach ($fixture in $standardWrapperVariants) {
     $adventureGearCommand = $fixture.Command -replace '(?i)-D master$', '-Database AdventureGearAI'
@@ -549,7 +553,7 @@ $allEnglishCommands = [System.Collections.Generic.HashSet[string]]::new([System.
 foreach ($englishReadme in $englishReadmes) {
     $englishText = Get-DocumentText -Path $englishReadme.FullName
     if ($null -eq $englishText) { continue }
-    foreach ($command in (Get-RunnablePowerShellCommands -Text $englishText)) {
+    foreach ($command in @(Get-RunnablePowerShellCommands -Text $englishText)) {
         [void]$allEnglishCommands.Add($command)
         if ($command -notmatch '(?i)^pwsh(?: -NoProfile)? -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
             Add-Failure "$(Resolve-RepoPath $englishReadme.FullName) has a runnable command without an explicit DEMO script path: $command"
