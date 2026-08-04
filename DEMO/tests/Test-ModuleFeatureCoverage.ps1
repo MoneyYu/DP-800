@@ -69,7 +69,7 @@ function Test-CanonicalSql2025DockerRecipe {
 
     return $from.Success -and $rootUser.Success -and $curl.Success -and
         $install.Success -and $cleanup.Success -and $mssqlUser.Success -and
-        $userInstructions.Count -gt 0 -and $fromInstructions.Count -gt 0 -and
+        $userInstructions.Count -gt 0 -and $fromInstructions.Count -eq 1 -and
         $from.Index -lt $rootUser.Index -and $rootUser.Index -lt $curl.Index -and
         $curl.Index -lt $install.Index -and $install.Index -lt $cleanup.Index -and
         $cleanup.Index -lt $mssqlUser.Index -and
@@ -354,6 +354,15 @@ FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
 RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
 RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN rm -rf /var/lib/apt/lists/*
+USER mssql
+'@
+    PrependedFromStage = @'
+FROM ubuntu:24.04
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
 '@
