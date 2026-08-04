@@ -419,10 +419,6 @@ function Test-CommandSet {
     $englishRelativePath = Resolve-RepoPath $EnglishPath
     $localizedRelativePath = Resolve-RepoPath $LocalizedPath
 
-    if ($englishCommands.Count -eq 0) {
-        Add-Failure "$englishRelativePath has no runnable 'pwsh -NoProfile -File' command lines to localize."
-    }
-
     foreach ($command in $englishCommands) {
         if ($command -notmatch '(?i)^pwsh(?: -NoProfile)? -File\s+DEMO/[^\s]+\.ps1(?:\s|$)') {
             Add-Failure "$englishRelativePath has a runnable command without an explicit DEMO script path: $command"
@@ -450,6 +446,26 @@ function Test-CommandSet {
             Add-Failure "$localizedRelativePath has a runnable command not present in ${englishRelativePath}: $command"
         }
     }
+}
+
+$emptyCommandParityFailureStart = $failures.Count
+Test-CommandSet -EnglishPath 'commandless English fixture' -LocalizedPath 'commandless zh-TW fixture' `
+    -EnglishText 'No runnable commands.' `
+    -LocalizedText '沒有可執行的命令。'
+$emptyCommandParityFailures = @($failures.GetRange($emptyCommandParityFailureStart, $failures.Count - $emptyCommandParityFailureStart))
+$failures.RemoveRange($emptyCommandParityFailureStart, $failures.Count - $emptyCommandParityFailureStart)
+if ($emptyCommandParityFailures.Count -ne 0) {
+    Add-Failure 'Command parity fixture does not allow matching commandless English and zh-TW READMEs.'
+}
+
+$localizedOnlyCommandFailureStart = $failures.Count
+Test-CommandSet -EnglishPath 'commandless English mismatch fixture' -LocalizedPath 'localized-command zh-TW mismatch fixture' `
+    -EnglishText 'No runnable commands.' `
+    -LocalizedText 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI'
+$localizedOnlyCommandFailures = @($failures.GetRange($localizedOnlyCommandFailureStart, $failures.Count - $localizedOnlyCommandFailureStart))
+$failures.RemoveRange($localizedOnlyCommandFailureStart, $failures.Count - $localizedOnlyCommandFailureStart)
+if (-not ($localizedOnlyCommandFailures -like '* has a runnable command not present in *')) {
+    Add-Failure 'Command parity fixture does not reject a localized command with no English counterpart.'
 }
 
 Test-CommandSet -EnglishPath 'single-command English fixture' -LocalizedPath 'single-command zh-TW fixture' `
