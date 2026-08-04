@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 $imageTag = 'dp800-sql2025-demo:latest'
 $probeName = 'dp800-sql2025-feature-probe'
+$probeOwnerLabel = 'dp800.probe-owner'
 $dockerfile = Join-Path $PSScriptRoot 'Dockerfile'
 
 function Get-AvailableLoopbackPort {
@@ -89,6 +90,37 @@ function Invoke-ProbeSqlQuery {
     return ($output -join [Environment]::NewLine).Trim()
 }
 
+function Get-OwnedProbeContainerId {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ContainerName,
+
+        [Parameter(Mandatory)]
+        [string]$OwnerLabel,
+
+        [Parameter(Mandatory)]
+        [string]$OwnerToken
+    )
+
+    $format = '{{.ID}}|{{.Names}}|{{.Label "' + $OwnerLabel + '"}}'
+    $probeContainers = @(& docker ps -a --filter "name=^/$ContainerName$" --format $format)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to inspect Docker containers while cleaning up the temporary probe.'
+    }
+
+    $expectedProbe = '^(?<id>[0-9a-f]{12,64})\|' +
+        [regex]::Escape($ContainerName) + '\|' +
+        [regex]::Escape($OwnerToken) + '$'
+    foreach ($probeContainer in $probeContainers) {
+        $match = [regex]::Match($probeContainer, $expectedProbe)
+        if ($match.Success) {
+            return $match.Groups['id'].Value
+        }
+    }
+
+    return $null
+}
+
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw 'Docker is required to build the DP-800 SQL Server 2025 demo image.'
 }
@@ -115,7 +147,8 @@ $hadMssqlSaPassword = Test-Path Env:MSSQL_SA_PASSWORD
 $originalMssqlSaPassword = $env:MSSQL_SA_PASSWORD
 $hadSqlcmdPassword = Test-Path Env:SQLCMDPASSWORD
 $originalSqlcmdPassword = $env:SQLCMDPASSWORD
-$createdProbe = $false
+$probeOwnerToken = [guid]::NewGuid().ToString('N')
+$ownsProbeAttempt = $false
 $cleanupError = $null
 try {
     $saPassword = Get-SaPassword
@@ -126,7 +159,9 @@ try {
     $port = if ($PSBoundParameters.ContainsKey('ProbePort')) { $ProbePort } else { Get-AvailableLoopbackPort }
     $portMapping = '127.0.0.1:{0}:1433' -f $port
 
+    $ownsProbeAttempt = $true
     & docker run --detach --name $probeName --publish $portMapping `
+        --label "$probeOwnerLabel=$probeOwnerToken" `
         --env 'ACCEPT_EULA=Y' `
         --env 'MSSQL_PID=Developer' `
         --env 'MSSQL_SA_PASSWORD' `
@@ -134,7 +169,6 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to start $probeName on localhost:$port."
     }
-    $createdProbe = $true
 
     Write-Host "Temporary probe $probeName is running at 127.0.0.1,$port."
     Wait-ForProbeSqlReady -ContainerName $probeName
@@ -169,13 +203,22 @@ SELECT CONCAT(
     Write-Host "Validated installed packages: mssql-server-fts, mssql-server-polybase."
 }
 finally {
-    if ($createdProbe) {
-        & docker rm -f $probeName | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "Removed temporary probe $probeName."
+    if ($ownsProbeAttempt) {
+        try {
+            $ownedProbeId = Get-OwnedProbeContainerId -ContainerName $probeName `
+                -OwnerLabel $probeOwnerLabel -OwnerToken $probeOwnerToken
+            if ($null -ne $ownedProbeId) {
+                & docker rm -f $ownedProbeId | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "Removed temporary probe $probeName."
+                }
+                else {
+                    $cleanupError = "Unable to remove temporary probe $probeName."
+                }
+            }
         }
-        else {
-            $cleanupError = "Unable to remove temporary probe $probeName."
+        catch {
+            $cleanupError = $_.Exception.Message
         }
     }
 
