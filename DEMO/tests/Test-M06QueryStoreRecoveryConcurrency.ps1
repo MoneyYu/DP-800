@@ -36,11 +36,13 @@ function Get-SourceIndex {
 
 $planForcing = Get-Content -LiteralPath $planForcingPath -Raw
 $reset = Get-Content -LiteralPath $resetPath -Raw
+$workload = Get-Content -LiteralPath $workloadPath -Raw
 $resource = "N'DP800.M06.QueryStoreRecovery'"
 
 foreach ($script in @(
     @{ Name = 'M06 plan forcing demo'; Text = $planForcing },
-    @{ Name = 'M06 reset'; Text = $reset }
+    @{ Name = 'M06 reset'; Text = $reset },
+    @{ Name = 'M06 workload setup'; Text = $workload }
 )) {
     Assert-True ($script.Text -match '(?i)sp_getapplock') "$($script.Name) must acquire the Query Store recovery application lock."
     Assert-True ($script.Text -match [regex]::Escape($resource)) "$($script.Name) must use the DP800.M06.QueryStoreRecovery application-lock resource."
@@ -67,6 +69,20 @@ $resetFinalRelease = Get-SourceIndex $reset 'sp_releaseapplock' -Last
 $resetDrop = Get-SourceIndex $reset 'DROP TABLE IF EXISTS ops.M06QueryStoreRuntimeState'
 Assert-True ($resetLock -ge 0 -and $resetMigration -gt $resetLock) 'M06 reset must lock before recovery-state schema migration.'
 Assert-True ($resetFinalRelease -gt $resetDrop) 'M06 reset must retain the lock through recovery-state removal.'
+
+$workloadLock = Get-SourceIndex $workload 'sp_getapplock'
+$workloadDrop = Get-SourceIndex $workload 'DROP TABLE IF EXISTS ops.PerformanceOrders'
+$workloadQueryStore = Get-SourceIndex $workload 'ALTER DATABASE CURRENT SET QUERY_STORE = ON'
+$workloadFinalRelease = Get-SourceIndex $workload 'sp_releaseapplock' -Last
+Assert-True ($workloadLock -ge 0 -and $workloadDrop -gt $workloadLock) 'M06 workload setup must acquire the lifecycle lock before dropping PerformanceOrders.'
+Assert-True ($workloadLock -ge 0 -and $workloadQueryStore -gt $workloadLock) 'M06 workload setup must acquire the lifecycle lock before changing Query Store settings.'
+Assert-True ($workloadFinalRelease -gt $workloadQueryStore) 'M06 workload setup must retain the lifecycle lock through its Query Store configuration.'
+Assert-True ($workload -match '(?is)BEGIN\s+CATCH.*?sp_releaseapplock.*?THROW') 'M06 workload setup must release the held application lock in CATCH before rethrowing.'
+Assert-True ($workload -match '\(\s*n\.Number\s*-\s*1\s*\)\s*%\s*150\s*\)\s*\+\s*1') 'M06 workload setup must distribute rows across canonical ProductID values 1..150.'
+Assert-True ($workload -match '\(\s*n\.Number\s*-\s*1\s*\)\s*%\s*120\s*\)\s*\+\s*1') 'M06 workload setup must distribute rows across canonical CustomerID values 1..120.'
+Assert-True ($workload -match 'TOP\s*\(\s*10000\s*\)') 'M06 workload setup must retain exactly 10,000 generated rows.'
+Assert-True ($workload -notmatch '\(\s*n\.Number\s*%\s*12\s*\)\s*\+\s*1') 'M06 workload setup must not use the stale 12-product generator range.'
+Assert-True ($workload -notmatch '\(\s*n\.Number\s*%\s*6\s*\)\s*\+\s*1') 'M06 workload setup must not use the stale 6-customer generator range.'
 
 if ($failures.Count -gt 0) {
     Write-Host "FAIL ($($failures.Count) source issue(s))" -ForegroundColor Red
@@ -114,6 +130,15 @@ function Start-SqlFile {
         $output = & $SqlcmdPath -S $TargetServer -U $TargetUser -d AdventureGearAI -i $SqlPath -h -1 -W -b -C -I -x 2>&1 | Out-String
         [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
     } -ArgumentList $sqlcmd.Source, $Server, $User, $Path, $password
+}
+
+function Start-ForcedM06Setup {
+    Start-Job -ScriptBlock {
+        param($RunnerPath, $TargetServer, $TargetUser, $SqlPassword)
+        $env:SQLCMDPASSWORD = $SqlPassword
+        $output = & pwsh -NoProfile -File $RunnerPath -Server $TargetServer -User $TargetUser -Modules 6 -Force -SkipCoreBootstrap 2>&1 | Out-String
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+    } -ArgumentList $runnerPath, $Server, $User, $password
 }
 
 function Start-SqlQuery {
@@ -178,6 +203,19 @@ try {
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
     $provision = & pwsh -NoProfile -File $runnerPath -Server $Server -User $User -Modules 6 -Force 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { throw "M06 provisioning failed: $provision" }
+    $workloadRowCount = Invoke-Query 'SELECT COUNT(*) FROM ops.PerformanceOrders;'
+    $workloadProductCount = Invoke-Query 'SELECT COUNT(DISTINCT ProductID) FROM ops.PerformanceOrders;'
+    $workloadCustomerCount = Invoke-Query 'SELECT COUNT(DISTINCT CustomerID) FROM ops.PerformanceOrders;'
+    $invalidWorkloadForeignKeys = Invoke-Query @"
+SELECT COUNT(*)
+FROM ops.PerformanceOrders AS po
+WHERE NOT EXISTS (SELECT 1 FROM catalog.Products AS p WHERE p.ProductID = po.ProductID)
+   OR NOT EXISTS (SELECT 1 FROM customer.Customers AS c WHERE c.CustomerID = po.CustomerID);
+"@
+    Assert-True ($workloadRowCount[0] -eq '10000') 'M06 workload setup must create exactly 10,000 rows.'
+    Assert-True ($workloadProductCount[0] -eq '150') 'M06 workload setup must cover all 150 canonical products.'
+    Assert-True ($workloadCustomerCount[0] -eq '120') 'M06 workload setup must cover all 120 canonical customers.'
+    Assert-True ($invalidWorkloadForeignKeys[0] -eq '0') 'M06 workload setup must preserve valid product and customer foreign keys.'
 
     Invoke-Query @"
 DROP TABLE IF EXISTS ops.M06QueryStoreRuntimeState;
@@ -347,6 +385,84 @@ EXEC sys.sp_releaseapplock
     finally {
         try { Invoke-Query "INSERT ops.M06QueryStoreRaceSync (Actor) SELECT N'Release' WHERE NOT EXISTS (SELECT 1 FROM ops.M06QueryStoreRaceSync WHERE Actor = N'Release');" | Out-Null } catch { }
         foreach ($job in @($blocker, $resetJob, $planJob) | Where-Object { $null -ne $_ }) {
+            if ($job.State -eq 'Running') { Stop-Job -Job $job -ErrorAction SilentlyContinue }
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+        try { Invoke-Query 'DROP TABLE IF EXISTS ops.M06QueryStoreRaceSync;' | Out-Null } catch { }
+    }
+
+    # Queue forced setup, plan forcing, and reset in that order. Every operation
+    # must pass through the lifecycle lock: setup creates a complete workload,
+    # plan forcing validates and uses it, then reset removes it without exposing
+    # a dropped table to either of the earlier operations.
+    $provision = & pwsh -NoProfile -File $runnerPath -Server $Server -User $User -Modules 6 -Force 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "M06 reprovisioning before setup race failed: $provision" }
+    Invoke-Query @"
+DROP TABLE IF EXISTS ops.M06QueryStoreRaceSync;
+CREATE TABLE ops.M06QueryStoreRaceSync
+(
+    Actor nvarchar(30) NOT NULL CONSTRAINT PK_M06QueryStoreRaceSync PRIMARY KEY
+);
+"@ | Out-Null
+
+    $blocker = Start-SqlQuery @"
+DECLARE @lockResult int;
+DECLARE @release bit = 0;
+EXEC @lockResult = sys.sp_getapplock
+    @Resource = N'DP800.M06.QueryStoreRecovery',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
+IF @lockResult < 0 THROW 51008, N'M06 setup-race blocker could not acquire the lifecycle lock.', 1;
+INSERT ops.M06QueryStoreRaceSync (Actor) VALUES (N'Blocker');
+WHILE @release = 0
+BEGIN
+    SET @release = CASE WHEN EXISTS (SELECT 1 FROM ops.M06QueryStoreRaceSync WHERE Actor = N'Release') THEN 1 ELSE 0 END;
+    IF @release = 0 WAITFOR DELAY '00:00:00.100';
+END;
+EXEC sys.sp_releaseapplock
+    @Resource = N'DP800.M06.QueryStoreRecovery',
+    @LockOwner = N'Session';
+"@
+    $setupJob = $null
+    $planJob = $null
+    $resetJob = $null
+    try {
+        $blockerDeadline = (Get-Date).AddSeconds(30)
+        do {
+            $blockerReady = Invoke-Query "SELECT COUNT(*) FROM ops.M06QueryStoreRaceSync WHERE Actor = N'Blocker';"
+            if ($blockerReady[0] -eq '1') { break }
+            Start-Sleep -Milliseconds 100
+        } while ((Get-Date) -lt $blockerDeadline)
+        if ($blockerReady[0] -ne '1') { throw 'M06 setup-race blocker did not signal that it holds the lifecycle lock.' }
+
+        $setupJob = Start-ForcedM06Setup
+        Wait-ForAppLockWait -ExpectedCount 1 -Label 'Forced M06 setup'
+        $planJob = Start-SqlFile -Path $planForcingPath
+        Wait-ForAppLockWait -ExpectedCount 2 -Label 'Forced M06 setup and plan-forcing race'
+        $resetJob = Start-SqlFile -Path $resetPath
+        Wait-ForAppLockWait -ExpectedCount 3 -Label 'Forced M06 setup, plan-forcing, and reset race'
+
+        Invoke-Query "INSERT ops.M06QueryStoreRaceSync (Actor) VALUES (N'Release');" | Out-Null
+        $null = Wait-Job -Job $blocker, $setupJob, $planJob, $resetJob -Timeout 180
+        $blockerResult = Receive-Job -Job $blocker
+        $setupResult = Receive-Job -Job $setupJob
+        $planResult = Receive-Job -Job $planJob
+        $resetResult = Receive-Job -Job $resetJob
+
+        Assert-True ($blocker.State -eq 'Completed' -and $blockerResult.ExitCode -eq 0) "M06 setup-race blocker did not complete: $($blockerResult.Output)"
+        Assert-True ($setupJob.State -eq 'Completed' -and $setupResult.ExitCode -eq 0) "Forced M06 setup did not complete during the lifecycle race: $($setupResult.Output)"
+        Assert-True ($planJob.State -eq 'Completed' -and $planResult.ExitCode -eq 0) "M06 plan-forcing did not complete after forced setup: $($planResult.Output)"
+        Assert-True ($resetJob.State -eq 'Completed' -and $resetResult.ExitCode -eq 0) "M06 reset did not complete after forced setup and plan-forcing: $($resetResult.Output)"
+
+        $workloadExists = Invoke-Query "SELECT CASE WHEN OBJECT_ID(N'ops.PerformanceOrders', N'U') IS NULL THEN N'0' ELSE N'1' END;"
+        $raceStateExists = Invoke-Query "SELECT CASE WHEN OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL THEN N'0' ELSE N'1' END;"
+        Assert-True ($workloadExists[0] -eq '0') 'M06 reset must remove the workload after the queued forced setup and plan-forcing calls complete.'
+        Assert-True ($raceStateExists[0] -eq '0') 'The queued forced setup, plan-forcing, and reset calls must not leave recovery metadata.'
+    }
+    finally {
+        try { Invoke-Query "INSERT ops.M06QueryStoreRaceSync (Actor) SELECT N'Release' WHERE NOT EXISTS (SELECT 1 FROM ops.M06QueryStoreRaceSync WHERE Actor = N'Release');" | Out-Null } catch { }
+        foreach ($job in @($blocker, $setupJob, $planJob, $resetJob) | Where-Object { $null -ne $_ }) {
             if ($job.State -eq 'Running') { Stop-Job -Job $job -ErrorAction SilentlyContinue }
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
