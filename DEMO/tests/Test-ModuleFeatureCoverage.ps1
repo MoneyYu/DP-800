@@ -92,17 +92,23 @@ $m05 = Get-RequiredText 'DEMO\M05\common\01-security.sql'
 $m05Local = Get-RequiredText 'DEMO\M05\local\01-verify-security.sql'
 $m05Reset = Get-RequiredText 'DEMO\M05\reset\reset.sql'
 $m06 = Get-RequiredText 'DEMO\M06\common\01-workload.sql'
-$m06Local = Get-RequiredText 'DEMO\M06\local\01-plans-query-store-dmvs.sql'
+$m06Local = @(
+    Get-RequiredText 'DEMO\M06\local\01-plans-query-store-dmvs.sql'
+    Get-RequiredText 'DEMO\M06\local\07-isolation-rcsi-probe.sql'
+    Get-RequiredText 'DEMO\M06\local\08-query-store-plan-forcing.sql'
+) -join "`n"
 $m06Reset = Get-RequiredText 'DEMO\M06\reset\reset.sql'
 $m08 = Get-RequiredText 'DEMO\M08\common\01-product-api.sql'
 $m08Config = Get-RequiredText 'DEMO\M08\common\dab-config.json'
 $m08Reset = Get-RequiredText 'DEMO\M08\reset\reset.sql'
 $m09 = Get-RequiredText 'DEMO\M09\common\01-review-data.sql'
 $m09Local = Get-RequiredText 'DEMO\M09\local\01-feature-detection.sql'
+$m09Reset = Get-RequiredText 'DEMO\M09\reset\reset.sql'
 $m10 = Get-RequiredText 'DEMO\M10\common\01-search-data.sql'
 $m10Local = Get-RequiredText 'DEMO\M10\local\01-search.sql'
 $m11 = Get-RequiredText 'DEMO\M11\common\01-local-rag.sql'
 $m11Local = Get-RequiredText 'DEMO\M11\local\01-build-prompt.sql'
+$m11Azure = Get-RequiredText 'DEMO\M11\azure\01-rag-procedure.sql'
 
 # Bootstrap: native json columns and deterministic, classroom-scale data.
 foreach ($column in 'ProductMetadata', 'Preferences', 'ShippingMetadata') {
@@ -177,9 +183,19 @@ foreach ($requirement in @(
     @{ Text = $m08Config; Pattern = '(?i)"relationships"\s*:'; Message = 'M08 DAB configuration must define entity relationships.' },
     @{ Text = $m08Config; Pattern = '(?i)"type"\s*:\s*"stored-procedure"'; Message = 'M08 DAB configuration must expose a stored-procedure entity.' },
     @{ Text = "$m09`n$m09Local"; Pattern = '(?i)AI_GENERATE_CHUNKS\s*\('; Message = 'M09 must invoke AI_GENERATE_CHUNKS.' },
-    @{ Text = $m09; Pattern = '(?i)CREATE\s+TABLE\s+\S*(?:Chunk|chunk)'; Message = 'M09 must persist chunks in a table.' },
+    @{ Text = $m09; Pattern = '(?is)compatibility_level.{0,300}IF\s+@compatibilityLevel\s*<\s*170'; Message = 'M09 must truthfully skip AI_GENERATE_CHUNKS below compatibility level 170.' },
+    @{ Text = $m09; Pattern = '(?i)CREATE\s+TABLE\s+ai\.EmbeddingChunks'; Message = 'M09 must persist generated chunks in ai.EmbeddingChunks.' },
+    @{ Text = $m09; Pattern = '(?i)\b(?:ProductID|SourceProductID)\b'; Message = 'M09 chunk rows must retain canonical product provenance.' },
+    @{ Text = $m09; Pattern = '(?i)\b(?:ReviewID|SourceReviewID)\b'; Message = 'M09 chunk rows must retain canonical review provenance.' },
+    @{ Text = $m09; Pattern = '(?is)\bChunkOrder\b.*\bChunkOffset\b.*\bChunkLength\b.*\bChunkSetID\b'; Message = 'M09 chunks must persist order, offset, length, and chunk-set identifiers.' },
+    @{ Text = $m09; Pattern = '(?i)CROSS\s+APPLY\s+AI_GENERATE_CHUNKS\s*\(\s*SOURCE\s*='; Message = 'M09 must CROSS APPLY AI_GENERATE_CHUNKS with a source expression.' },
+    @{ Text = $m09; Pattern = '(?i)ENABLE_CHUNK_SET_ID\s*=\s*1'; Message = 'M09 must enable AI_GENERATE_CHUNKS chunk-set IDs.' },
+    @{ Text = $m09Reset; Pattern = '(?i)DROP\s+TABLE\s+IF\s+EXISTS\s+ai\.EmbeddingChunks'; Message = 'M09 reset must remove ai.EmbeddingChunks.' },
     @{ Text = "$m10`n$m10Local"; Pattern = '(?i)FREETEXT\s*\('; Message = 'M10 must demonstrate FREETEXT.' },
-    @{ Text = "$m11`n$m11Local"; Pattern = '(?i)WITHOUT_ARRAY_WRAPPER'; Message = 'M11 must demonstrate WITHOUT_ARRAY_WRAPPER.' }
+    @{ Text = $m10Local; Pattern = '(?is)IF\s+@FullTextReady\s*=\s*1.{0,3000}FREETEXT\s*\('; Message = 'M10 must execute FREETEXT only after full-text readiness is confirmed.' },
+    @{ Text = "$m11`n$m11Azure"; Pattern = '(?i)FOR\s+JSON\s+PATH\s*,\s*WITHOUT_ARRAY_WRAPPER'; Message = 'M11 must produce a real single-object grounding context.' },
+    @{ Text = "$m11`n$m11Azure"; Pattern = '(?i)JSON_QUERY\s*\(\s*CONVERT\s*\(\s*nvarchar\s*\(\s*max\s*\)\s*,\s*(?:p\.)?ProductMetadata\s*\)\s*\)'; Message = 'M11 must preserve native json ProductMetadata as nested JSON.' },
+    @{ Text = "$m11`n$m11Azure"; Pattern = '(?i)catalog\.Products'; Message = 'M11 must retain canonical catalog product grounding.' }
 )) {
     Assert-Present -Text $requirement.Text -Pattern $requirement.Pattern -Message $requirement.Message
 }

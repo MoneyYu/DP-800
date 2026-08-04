@@ -9,6 +9,7 @@
     Module-owned objects removed (dependency-safe order):
       * AdventureGearEmbeddingModel  (Azure external model, feature/edition gated)
       * ai.VectorFeatureProbe        (transient local feature-detection probe)
+      * ai.EmbeddingChunks           (generated embedding chunks)
       * ai.EmbeddingDocuments        (embedding source-document table)
 
     Dependency/staleness reset: M10 (vector search) and M11 (RAG) consume the M09
@@ -73,12 +74,13 @@ END CATCH;
 GO
 
 /* ---------------------------------------------------------------------------
-   Teardown module-owned tables (probe -> embedding documents). The canonical
+   Teardown module-owned tables (probe -> chunks -> embedding documents). The canonical
    catalog/customer core is never dropped.
 ---------------------------------------------------------------------------
 拆除模組專屬資料表（探查再嵌入文件）。標準 catalog/customer 核心絕不會被卸除。
 */
 DROP TABLE IF EXISTS ai.VectorFeatureProbe;
+DROP TABLE IF EXISTS ai.EmbeddingChunks;
 DROP TABLE IF EXISTS ai.EmbeddingDocuments;
 GO
 

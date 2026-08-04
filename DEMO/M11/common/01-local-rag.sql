@@ -38,15 +38,29 @@ BEGIN
        */
     DECLARE @Context nvarchar(max) =
     (
-        SELECT TOP (3)
+        SELECT TOP (1)
+            d.ProductID,
             d.ProductName,
-            d.Rating,
-            d.DocumentText
+            JSON_QUERY(CONVERT(nvarchar(max), p.ProductMetadata)) AS ProductMetadata,
+            JSON_QUERY
+            (
+                (
+                    SELECT TOP (3)
+                        related.DocumentID,
+                        related.Rating,
+                        related.DocumentText
+                    FROM search.SearchDocuments AS related
+                    WHERE related.ProductID = d.ProductID
+                    ORDER BY related.Rating DESC, related.DocumentID
+                    FOR JSON PATH
+                )
+            ) AS Reviews
         FROM search.SearchDocuments AS d
+        INNER JOIN catalog.Products AS p ON p.ProductID = d.ProductID
         WHERE d.ProductName LIKE N'%' + @SearchTerm + N'%'
            OR d.DocumentText LIKE N'%' + @SearchTerm + N'%'
         ORDER BY d.Rating DESC, d.DocumentID
-        FOR JSON PATH
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
     );
 
     DECLARE @Payload nvarchar(max) = JSON_OBJECT
@@ -61,7 +75,7 @@ BEGIN
             JSON_OBJECT
             (
                 'role': 'user',
-                'content': CONCAT(N'Context: ', COALESCE(@Context, N'[]'), CHAR(10), N'Question: ', @Question)
+                'content': CONCAT(N'Context: ', COALESCE(@Context, N'{}'), CHAR(10), N'Question: ', @Question)
             )
         ),
         'max_tokens': 300,

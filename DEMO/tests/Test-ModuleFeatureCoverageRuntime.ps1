@@ -58,6 +58,19 @@ function Assert-Scalar {
     param([string]$Label, [string]$Expected, [string]$Actual)
     if ($Actual -ne $Expected) { Add-Failure "$Label returned '$Actual' (expected '$Expected')." }
 }
+function Invoke-ProbeSqlFile {
+    param([string]$RelativePath)
+
+    $scriptText = Get-Text $RelativePath
+    if ($null -eq $scriptText) { return }
+
+    $scriptText = $scriptText -replace '(?i)USE\s+\[AdventureGearAI\]\s*;', "USE [$probeDatabase];"
+    foreach ($batch in ($scriptText -split '(?im)^\s*GO\s*(?:--.*)?(?:\r?\n|$)')) {
+        if (-not [string]::IsNullOrWhiteSpace($batch)) {
+            Invoke-Query -Database $probeDatabase -Query $batch | Out-Null
+        }
+    }
+}
 
 Write-Host 'SQL Server 2025 module feature coverage (runtime)'
 Write-Host ''
@@ -71,8 +84,10 @@ $m06 = Get-Text 'DEMO\M06\local\01-plans-query-store-dmvs.sql'
 $m08 = Get-Text 'DEMO\M08\common\01-product-api.sql'
 $m08Config = Get-Text 'DEMO\M08\common\dab-config.json'
 $m09 = Get-Text 'DEMO\M09\common\01-review-data.sql'
+$m09Reset = Get-Text 'DEMO\M09\reset\reset.sql'
 $m10 = Get-Text 'DEMO\M10\local\01-search.sql'
-$m11 = Get-Text 'DEMO\M11\local\01-build-prompt.sql'
+$m11 = Get-Text 'DEMO\M11\common\01-local-rag.sql'
+$m11Azure = Get-Text 'DEMO\M11\azure\01-rag-procedure.sql'
 
 Assert-Source $bootstrap '(?i)ProductMetadata\s+json\b' 'bootstrap native json ProductMetadata column'
 Assert-Source $bootstrap '(?i)Preferences\s+json\b' 'bootstrap native json Preferences column'
@@ -89,9 +104,15 @@ Assert-Source $m08 '(?i)sp_cdc_enable' 'M08 CDC setup'
 Assert-Source $m08Config '(?i)"cache"\s*:' 'M08 DAB cache configuration'
 Assert-Source $m08Config '(?i)"relationships"\s*:' 'M08 DAB relationship configuration'
 Assert-Source $m08Config '(?i)"type"\s*:\s*"stored-procedure"' 'M08 DAB stored-procedure entity configuration'
-Assert-Source $m09 '(?i)AI_GENERATE_CHUNKS' 'M09 chunk generation setup'
+Assert-Source $m09 '(?is)compatibility_level.{0,300}IF\s+@compatibilityLevel\s*<\s*170' 'M09 compatibility-level skip'
+Assert-Source $m09 '(?i)CREATE\s+TABLE\s+ai\.EmbeddingChunks' 'M09 chunk persistence table'
+Assert-Source $m09 '(?i)CROSS\s+APPLY\s+AI_GENERATE_CHUNKS\s*\(\s*SOURCE\s*=' 'M09 chunk generation CROSS APPLY'
+Assert-Source $m09 '(?i)ENABLE_CHUNK_SET_ID\s*=\s*1' 'M09 chunk-set IDs'
+Assert-Source $m09Reset '(?i)DROP\s+TABLE\s+IF\s+EXISTS\s+ai\.EmbeddingChunks' 'M09 chunk reset'
 Assert-Source $m10 '(?i)FREETEXT\s*\(' 'M10 full-text search setup'
-Assert-Source $m11 '(?i)WITHOUT_ARRAY_WRAPPER' 'M11 JSON single-object setup'
+Assert-Source $m11 '(?i)FOR\s+JSON\s+PATH\s*,\s*WITHOUT_ARRAY_WRAPPER' 'M11 local JSON single-object context'
+Assert-Source $m11Azure '(?i)FOR\s+JSON\s+PATH\s*,\s*WITHOUT_ARRAY_WRAPPER' 'M11 Azure JSON single-object context'
+Assert-Source "$m11`n$m11Azure" '(?i)JSON_QUERY\s*\(\s*CONVERT\s*\(\s*nvarchar\s*\(\s*max\s*\)\s*,\s*(?:p\.)?ProductMetadata\s*\)\s*\)' 'M11 nested native json product metadata'
 
 if ($failures.Count -gt 0) {
     Write-Host "FAIL ($($failures.Count) missing feature setup item(s))" -ForegroundColor Red
@@ -218,19 +239,231 @@ EXEC sys.sp_cdc_disable_table @source_schema=N'dbo', @source_name=N'ChildProbe',
 EXEC sys.sp_cdc_disable_db;
 "@ | ForEach-Object { Assert-Scalar -Label 'M08 CDC, relationship, and procedure runtime operations' -Expected 'PASS' -Actual $_ }
 
-    # M09 chunk persistence and M10 FREETEXT are conditional on installed engine features.
-    Invoke-Query -Database $probeDatabase -Query @"
-CREATE TABLE dbo.ChunkProbe (ChunkId int IDENTITY CONSTRAINT PK_ChunkProbe PRIMARY KEY, ChunkText nvarchar(max) NOT NULL);
-INSERT dbo.ChunkProbe (ChunkText)
-SELECT chunks.chunk
-FROM (VALUES (N'Trail riding requires careful tire selection.')) AS source(TextToChunk)
-CROSS APPLY AI_GENERATE_CHUNKS(SOURCE = source.TextToChunk, CHUNK_TYPE = FIXED, CHUNK_SIZE = 20, OVERLAP = 0) AS chunks;
+    # M09 executes only when the documented compatibility prerequisite exists.
+    $compatibilityLevel = [int](Get-Scalar -Database $probeDatabase -Query "SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID();")
+    if ($compatibilityLevel -lt 170) {
+        Write-Host "SKIP: AI_GENERATE_CHUNKS requires compatibility level 170 (current: $compatibilityLevel)." -ForegroundColor Yellow
+    }
+    else {
+        Invoke-Query -Database $probeDatabase -Query @"
+CREATE TABLE dbo.ChunkProbe
+(
+    ChunkId bigint IDENTITY CONSTRAINT PK_ChunkProbe PRIMARY KEY,
+    SourceProductId int NOT NULL,
+    SourceReviewId int NOT NULL,
+    ChunkText nvarchar(max) NOT NULL,
+    ChunkOrder bigint NOT NULL,
+    ChunkOffset bigint NOT NULL,
+    ChunkLength int NOT NULL,
+    ChunkSetId bigint NOT NULL
+);
+INSERT dbo.ChunkProbe (SourceProductId, SourceReviewId, ChunkText, ChunkOrder, ChunkOffset, ChunkLength, ChunkSetId)
+SELECT source.SourceProductId,
+       source.SourceReviewId,
+       chunks.chunk,
+       chunks.chunk_order,
+       chunks.chunk_offset,
+       chunks.chunk_length,
+       chunks.chunk_set_id
+FROM (VALUES
+    (101, 1001, CONVERT(nvarchar(max), N'Summit Trail Tire has puncture-resistant casing for rough roads. Riders reported dependable traction and comfortable handling through long wet trail rides.')),
+    (102, 1002, CONVERT(nvarchar(max), N'Night Beacon Light keeps the route visible after sunset. The waterproof housing and long battery life helped on repeated evening commutes.'))
+) AS source(SourceProductId, SourceReviewId, TextToChunk)
+CROSS APPLY AI_GENERATE_CHUNKS
+(
+    SOURCE = source.TextToChunk,
+    CHUNK_TYPE = FIXED,
+    CHUNK_SIZE = 40,
+    OVERLAP = 10,
+    ENABLE_CHUNK_SET_ID = 1
+) AS chunks;
+SELECT CASE WHEN (SELECT COUNT(*) FROM dbo.ChunkProbe) > 2
+                  AND (SELECT COUNT(DISTINCT ChunkSetId) FROM dbo.ChunkProbe) = 2
+                  AND NOT EXISTS
+                  (
+                      SELECT 1
+                      FROM dbo.ChunkProbe AS currentChunk
+                      WHERE currentChunk.ChunkOrder <> 1
+                        AND NOT EXISTS
+                        (
+                            SELECT 1
+                            FROM dbo.ChunkProbe AS priorChunk
+                            WHERE priorChunk.ChunkSetId = currentChunk.ChunkSetId
+                              AND priorChunk.ChunkOrder = currentChunk.ChunkOrder - 1
+                              AND priorChunk.ChunkOffset < currentChunk.ChunkOffset
+                        )
+                  )
+                  AND NOT EXISTS
+                  (
+                      SELECT 1
+                      FROM dbo.ChunkProbe
+                      WHERE ChunkLength <> LEN(ChunkText) OR ChunkOffset < 1
+                  )
+            THEN 'PASS' ELSE 'FAIL' END;
+"@ | ForEach-Object { Assert-Scalar -Label 'M09 chunk rows retain source, order, offset, length, and set identifiers' -Expected 'PASS' -Actual $_ }
+    }
+
+    # M10 FREETEXT is conditional on the installed Full-Text Search component.
+    if ($ftsInstalled -eq '1') {
+        Invoke-Query -Database $probeDatabase -Query @"
+CREATE TABLE dbo.FullTextProbe
+(
+    FullTextProbeId int IDENTITY CONSTRAINT PK_FullTextProbe PRIMARY KEY,
+    Content nvarchar(max) NOT NULL
+);
+INSERT dbo.FullTextProbe (Content)
+VALUES (N'Summit Trail Tire uses puncture-resistant casing for rough roads.');
 CREATE FULLTEXT CATALOG ProbeFullTextCatalog;
-CREATE FULLTEXT INDEX ON dbo.ChunkProbe(ChunkText LANGUAGE 1033) KEY INDEX PK_ChunkProbe;
-ALTER FULLTEXT INDEX ON dbo.ChunkProbe START FULL POPULATION;
-WAITFOR DELAY '00:00:02';
-SELECT CASE WHEN EXISTS (SELECT 1 FROM dbo.ChunkProbe WHERE FREETEXT(ChunkText, N'tire')) THEN 'PASS' ELSE 'FAIL' END;
-"@ | ForEach-Object { Assert-Scalar -Label 'M09 chunks and M10 FREETEXT runtime operations' -Expected 'PASS' -Actual $_ }
+CREATE FULLTEXT INDEX ON dbo.FullTextProbe(Content LANGUAGE 1033) KEY INDEX PK_FullTextProbe;
+ALTER FULLTEXT INDEX ON dbo.FullTextProbe START FULL POPULATION;
+WHILE FULLTEXTCATALOGPROPERTY(N'ProbeFullTextCatalog', N'PopulateStatus') <> 0
+    WAITFOR DELAY '00:00:01';
+SELECT CASE WHEN EXISTS
+(
+    SELECT 1
+    FROM dbo.FullTextProbe
+    WHERE FREETEXT(Content, N'puncture resistance')
+) THEN 'PASS' ELSE 'FAIL' END;
+"@ | ForEach-Object { Assert-Scalar -Label 'M10 FREETEXT runtime operation' -Expected 'PASS' -Actual $_ }
+    }
+    else {
+        Write-Host 'SKIP: FREETEXT requires the Full-Text Search component.' -ForegroundColor Yellow
+    }
+
+    # M11 must emit a valid single-object JSON context and a valid prompt while
+    # preserving native json product metadata and canonical product identity.
+    Invoke-Query -Database $probeDatabase -Query @"
+CREATE TABLE dbo.CanonicalProductProbe
+(
+    ProductId int NOT NULL PRIMARY KEY,
+    ProductName nvarchar(120) NOT NULL,
+    ProductMetadata json NOT NULL
+);
+CREATE TABLE dbo.CanonicalReviewProbe
+(
+    ReviewId int NOT NULL PRIMARY KEY,
+    ProductId int NOT NULL REFERENCES dbo.CanonicalProductProbe(ProductId),
+    Rating tinyint NOT NULL,
+    ReviewText nvarchar(max) NOT NULL
+);
+INSERT dbo.CanonicalProductProbe
+VALUES (42, N'Summit Trail Tire', '{"category":"Tires","features":["puncture-resistant","wet grip"]}');
+INSERT dbo.CanonicalReviewProbe
+VALUES (7, 42, 5, N'Puncture resistance stayed dependable over rough roads.');
+
+DECLARE @Reviews nvarchar(max) =
+(
+    SELECT r.ReviewId, r.Rating, r.ReviewText
+    FROM dbo.CanonicalReviewProbe AS r
+    WHERE r.ProductId = 42
+    FOR JSON PATH
+);
+DECLARE @Context nvarchar(max) =
+(
+    SELECT TOP (1)
+        p.ProductId,
+        p.ProductName,
+        JSON_QUERY(CONVERT(nvarchar(max), p.ProductMetadata)) AS ProductMetadata,
+        JSON_QUERY(@Reviews) AS Reviews
+    FROM dbo.CanonicalProductProbe AS p
+    WHERE p.ProductId = 42
+    FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+);
+DECLARE @Payload nvarchar(max) = JSON_OBJECT
+(
+    'messages': JSON_ARRAY
+    (
+        JSON_OBJECT
+        (
+            'role': 'user',
+            'content': CONCAT(N'Context: ', @Context, CHAR(10), N'Question: Which tire resists punctures?')
+        )
+    )
+);
+SELECT CASE WHEN ISJSON(@Context) = 1
+                  AND ISJSON(@Payload) = 1
+                  AND JSON_VALUE(@Context, '$.ProductId') = N'42'
+                  AND JSON_VALUE(@Context, '$.ProductName') = N'Summit Trail Tire'
+                  AND JSON_VALUE(@Context, '$.ProductMetadata.category') = N'Tires'
+                  AND JSON_VALUE(@Context, '$.Reviews[0].ReviewId') = N'7'
+                  AND JSON_VALUE(@Payload, '$.messages[0].content') LIKE N'%Summit Trail Tire%'
+            THEN 'PASS' ELSE 'FAIL' END;
+"@ | ForEach-Object { Assert-Scalar -Label 'M11 single-object JSON prompt preserves canonical grounding' -Expected 'PASS' -Actual $_ }
+
+    # Apply the real M09-M11 local scripts twice in dependency order. The probe
+    # has just the canonical product/review contract they consume, so this
+    # validates cumulative setup and safe reapplication without touching
+    # AdventureGearAI.
+    Invoke-Query -Database $probeDatabase -Query @"
+EXEC(N'CREATE SCHEMA catalog;');
+EXEC(N'CREATE SCHEMA customer;');
+EXEC(N'CREATE SCHEMA search;');
+EXEC(N'CREATE SCHEMA ai;');
+CREATE TABLE catalog.Products
+(
+    ProductID int NOT NULL PRIMARY KEY,
+    ProductName nvarchar(120) NOT NULL,
+    ProductMetadata json NOT NULL
+);
+CREATE TABLE customer.ProductReviews
+(
+    ReviewID int NOT NULL PRIMARY KEY,
+    ProductID int NOT NULL REFERENCES catalog.Products(ProductID),
+    ReviewTitle nvarchar(200) NOT NULL,
+    ReviewText nvarchar(max) NOT NULL,
+    Rating tinyint NOT NULL
+);
+INSERT catalog.Products (ProductID, ProductName, ProductMetadata)
+VALUES
+    (101, N'Summit Trail Tire', '{"category":"Tires","features":["puncture-resistant","wet grip"]}'),
+    (102, N'Night Beacon Light', '{"category":"Lights","features":["waterproof","long battery"]}');
+INSERT customer.ProductReviews (ReviewID, ProductID, ReviewTitle, ReviewText, Rating)
+VALUES
+    (1001, 101, N'Rough-road confidence', N'Puncture resistance and wet traction stayed dependable through long rough trail rides.', 5),
+    (1002, 102, N'Visible commute', N'The long battery life kept the route visible for repeated evening commutes.', 5);
+"@ | Out-Null
+
+    $m09ToM11LocalScripts = @(
+        'DEMO\M09\common\01-review-data.sql',
+        'DEMO\M09\local\01-feature-detection.sql',
+        'DEMO\M10\common\01-search-data.sql',
+        'DEMO\M10\local\01-search.sql',
+        'DEMO\M11\common\01-local-rag.sql',
+        'DEMO\M11\local\01-build-prompt.sql'
+    )
+    foreach ($pass in 1..2) {
+        foreach ($relativePath in $m09ToM11LocalScripts) {
+            Invoke-ProbeSqlFile -RelativePath $relativePath
+        }
+    }
+
+    Invoke-Query -Database $probeDatabase -Query @"
+DECLARE @result table (RetrievedContext nvarchar(max), AugmentedPrompt nvarchar(max), LocalDifference nvarchar(max));
+INSERT @result EXEC ai.usp_BuildRagPrompt @Question = N'Which tire resists punctures on rough roads?';
+SELECT CASE WHEN EXISTS (SELECT 1 FROM ai.EmbeddingChunks)
+                  AND NOT EXISTS
+                  (
+                      SELECT 1
+                      FROM ai.EmbeddingChunks AS c
+                      WHERE c.ChunkLength <> LEN(c.ChunkText)
+                         OR c.ChunkOffset < 1
+                         OR (c.ChunkOrder > 1 AND NOT EXISTS
+                             (
+                                 SELECT 1
+                                 FROM ai.EmbeddingChunks AS prior
+                                 WHERE prior.DocumentID = c.DocumentID
+                                   AND prior.ChunkSetID = c.ChunkSetID
+                                   AND prior.ChunkOrder = c.ChunkOrder - 1
+                                   AND prior.ChunkOffset < c.ChunkOffset
+                             ))
+                  )
+                  AND ISJSON((SELECT TOP (1) RetrievedContext FROM @result)) = 1
+                  AND ISJSON((SELECT TOP (1) AugmentedPrompt FROM @result)) = 1
+                  AND JSON_VALUE((SELECT TOP (1) RetrievedContext FROM @result), '$.ProductID') = N'101'
+                  AND JSON_VALUE((SELECT TOP (1) RetrievedContext FROM @result), '$.ProductMetadata.category') = N'Tires'
+                  AND JSON_QUERY((SELECT TOP (1) RetrievedContext FROM @result), '$.Reviews') IS NOT NULL
+            THEN 'PASS' ELSE 'FAIL' END;
+"@ | ForEach-Object { Assert-Scalar -Label 'M09-M11 cumulative local setup reapplication' -Expected 'PASS' -Actual $_ }
 }
 catch {
     Add-Failure "Runtime feature probe failed: $($_.Exception.Message)"
