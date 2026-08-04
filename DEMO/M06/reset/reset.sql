@@ -58,8 +58,12 @@ GO
 DECLARE @M06QueryId bigint;
 DECLARE @M06PlanId bigint;
 DECLARE @M06PriorQueryCaptureMode nvarchar(60);
+DECLARE @M06RecoveryStateActive bit = 0;
+DECLARE @M06UnforceCompleted bit = 1;
 IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NOT NULL
-    SELECT @M06PriorQueryCaptureMode = PriorQueryCaptureMode
+    SELECT
+        @M06PriorQueryCaptureMode = PriorQueryCaptureMode,
+        @M06RecoveryStateActive = 1
     FROM ops.M06QueryStoreRuntimeState
     WHERE M06QueryStoreRuntimeStateID = 1;
 
@@ -79,6 +83,7 @@ BEGIN
         EXEC sys.sp_query_store_unforce_plan @query_id = @M06QueryId, @plan_id = @M06PlanId;
     END TRY
     BEGIN CATCH
+        SET @M06UnforceCompleted = 0;
         PRINT CONCAT(N'M06 reset could not unforce Query Store plan ', @M06PlanId, N': ', ERROR_MESSAGE());
     END CATCH;
 
@@ -87,13 +92,21 @@ END;
 CLOSE M06ForcedPlanCursor;
 DEALLOCATE M06ForcedPlanCursor;
 
-IF @M06PriorQueryCaptureMode IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
+IF @M06UnforceCompleted = 0
+    THROW 51004, N'M06 reset could not complete Query Store plan cleanup; recovery state was retained for a later retry.', 1;
+
+IF @M06RecoveryStateActive = 1
 BEGIN
+    IF @M06PriorQueryCaptureMode NOT IN (N'ALL', N'AUTO', N'CUSTOM', N'NONE')
+        THROW 51005, N'M06 reset found an invalid Query Store recovery capture mode; recovery state was retained.', 1;
+
     DECLARE @M06RestoreQueryCaptureMode nvarchar(max) =
         N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @M06PriorQueryCaptureMode + N');';
     EXEC sys.sp_executesql @M06RestoreQueryCaptureMode;
+
+    DELETE FROM ops.M06QueryStoreRuntimeState
+    WHERE M06QueryStoreRuntimeStateID = 1;
 END;
-GO
 
 DROP TABLE IF EXISTS ops.PerformanceOrders;
 DROP TABLE IF EXISTS ops.M06QueryStoreRuntimeState;

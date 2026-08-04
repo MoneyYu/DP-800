@@ -69,6 +69,7 @@ Assert-Source $m06PlanForcing '(?i)sp_query_store_unforce_plan' 'M06 plan forcin
 Assert-Source $m06PlanForcing '(?i)(only|one).{0,80}plan|plan.{0,80}(only|one)' 'M06 plan forcing demo must explain the single-plan outcome.'
 Assert-Source $m06PlanForcing '(?i)query_capture_mode_desc' 'M06 plan forcing demo must capture the prior Query Store capture mode.'
 Assert-Source $m06PlanForcing '(?i)M06QueryStoreRuntimeState' 'M06 plan forcing demo must persist its prior capture mode for reset recovery.'
+Assert-Source $m06PlanForcing '(?i)DELETE\s+FROM\s+ops\.M06QueryStoreRuntimeState' 'M06 plan forcing demo must clear completed Query Store recovery state.'
 Assert-Source $m06Reset '(?i)sp_query_store_unforce_plan' 'M06 reset must unforce M06 Query Store plans.'
 Assert-Source $m06Reset '(?i)M06QueryStoreRuntimeState' 'M06 reset must restore the Query Store capture mode recorded by M06.'
 
@@ -253,9 +254,44 @@ FROM sys.database_query_store_options;
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\local\08-query-store-plan-forcing.sql' | Out-Null
     $postDemoCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
     Assert-True (($postDemoCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 plan-forcing demo must restore the prior Query Store capture mode.'
+    $completedRecoveryStateRows = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT COUNT(*)
+FROM ops.M06QueryStoreRuntimeState
+WHERE M06QueryStoreRuntimeStateID = 1;
+"@)
+    Assert-True (($completedRecoveryStateRows | Select-Object -First 1) -eq '0') 'Successful M06 plan-forcing cleanup must clear its Query Store recovery state.'
+    Invoke-Query -Database AdventureGearAI -Query @"
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = NONE);
+SELECT query_capture_mode_desc
+FROM sys.database_query_store_options;
+"@ | Out-Null
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
     $postResetCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
-    Assert-True (($postResetCaptureMode | Select-Object -First 1) -eq ($priorCaptureMode | Select-Object -First 1)) 'M06 reset must preserve the pre-demo Query Store capture mode.'
+    Assert-True (($postResetCaptureMode | Select-Object -First 1) -eq 'NONE') 'M06 reset must not revert a Query Store capture mode configured after successful plan-forcing cleanup.'
+
+    Invoke-Query -Database AdventureGearAI -Query @"
+CREATE TABLE ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID tinyint NOT NULL
+        CONSTRAINT PK_M06QueryStoreRuntimeState PRIMARY KEY
+        CONSTRAINT CK_M06QueryStoreRuntimeState_Singleton CHECK (M06QueryStoreRuntimeStateID = 1),
+    PriorQueryCaptureMode nvarchar(60) NOT NULL,
+    RecordedAtUtc datetime2(0) NOT NULL
+);
+INSERT ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID,
+    PriorQueryCaptureMode,
+    RecordedAtUtc
+)
+VALUES (1, N'AUTO', SYSUTCDATETIME());
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
+"@ | Out-Null
+    Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M06\reset\reset.sql' | Out-Null
+    $recoveredCaptureMode = @(Invoke-Query -Database AdventureGearAI -Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;')
+    Assert-True (($recoveredCaptureMode | Select-Object -First 1) -eq 'AUTO') 'M06 reset must restore an active Query Store recovery state retained after interruption.'
+    $recoveryStateRemoved = @(Invoke-Query -Database AdventureGearAI -Query "SELECT CASE WHEN OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL THEN N'PASS' ELSE N'FAIL' END;")
+    Assert-True ($recoveryStateRemoved -contains 'PASS') 'M06 reset must clear completed active Query Store recovery state.'
 
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
     $cdcInitial = @(Invoke-Query -Database AdventureGearAI -Query "SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID();")

@@ -54,6 +54,7 @@ DECLARE @queryId bigint;
 DECLARE @planId bigint;
 DECLARE @planCount int;
 DECLARE @forced bit = 0;
+DECLARE @captureModeRestored bit = 0;
 
 BEGIN TRY
     DROP INDEX IF EXISTS IX_PerformanceOrders_CustomerDate ON ops.PerformanceOrders;
@@ -126,19 +127,36 @@ BEGIN CATCH
     BEGIN
         BEGIN TRY
             EXEC sys.sp_query_store_unforce_plan @query_id = @queryId, @plan_id = @planId;
+            SET @forced = 0;
         END TRY
         BEGIN CATCH
             PRINT CONCAT(N'M06 cleanup could not unforce Query Store plan ', @planId, N': ', ERROR_MESSAGE());
         END CATCH;
     END;
 
-    DECLARE @restoreAfterError nvarchar(max) =
-        N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @priorQueryCaptureMode + N');';
-    EXEC sys.sp_executesql @restoreAfterError;
+    BEGIN TRY
+        DECLARE @restoreAfterError nvarchar(max) =
+            N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @priorQueryCaptureMode + N');';
+        EXEC sys.sp_executesql @restoreAfterError;
+        SET @captureModeRestored = 1;
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT(N'M06 cleanup could not restore Query Store capture mode: ', ERROR_MESSAGE());
+    END CATCH;
+
+    IF @forced = 0 AND @captureModeRestored = 1
+        DELETE FROM ops.M06QueryStoreRuntimeState
+        WHERE M06QueryStoreRuntimeStateID = 1;
+
     THROW;
 END CATCH;
 
 DECLARE @restoreAfterDemo nvarchar(max) =
     N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' + @priorQueryCaptureMode + N');';
 EXEC sys.sp_executesql @restoreAfterDemo;
+SET @captureModeRestored = 1;
+
+IF @forced = 0 AND @captureModeRestored = 1
+    DELETE FROM ops.M06QueryStoreRuntimeState
+    WHERE M06QueryStoreRuntimeStateID = 1;
 GO
