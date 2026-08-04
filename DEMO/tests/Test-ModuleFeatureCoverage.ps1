@@ -38,8 +38,9 @@ function Normalize-DockerfileSource {
 
     # This test deliberately recognizes only the repository's canonical recipe.
     # Strip Dockerfile comment lines, then flatten only explicit continuations.
-    $withoutComments = $Text -replace '(?m)^[ \t]*#.*(?:\r?\n|$)', ''
-    return $withoutComments -replace '\\\r?\n[ \t]*', ' '
+    $normalizedLineEndings = $Text -replace "\r\n?", "`n"
+    $withoutComments = $normalizedLineEndings -replace '(?m)^[ \t]*#.*(?:\n|$)', ''
+    return $withoutComments -replace '\\\n[ \t]*', ' '
 }
 function Test-CanonicalSql2025DockerRecipe {
     param([AllowEmptyString()][string]$DockerfileText)
@@ -282,6 +283,7 @@ RUN apt-get install \
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
 '@
+$crlfCanonicalDockerRecipe = $canonicalDockerRecipe -replace "`n", "`r`n"
 $dockerFixtures = @{
     FakeHeaderUrl = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
@@ -376,7 +378,7 @@ USER mssql
 FROM ubuntu:24.04
 '@
 }
-foreach ($recipe in $canonicalDockerRecipe, $continuedCanonicalDockerRecipe) {
+foreach ($recipe in $canonicalDockerRecipe, $continuedCanonicalDockerRecipe, $crlfCanonicalDockerRecipe) {
     if (-not (Test-CanonicalSql2025DockerRecipe -DockerfileText $recipe)) {
         Add-Failure 'Canonical Docker recipe self-fixture must be accepted.'
     }
