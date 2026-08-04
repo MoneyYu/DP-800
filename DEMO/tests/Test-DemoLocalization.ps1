@@ -14,12 +14,10 @@ function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
 function Test-ExplicitDatabaseSafety {
     param([string]$Command)
 
-    $databaseArguments = [regex]::Matches(
-        $Command,
-        '(?i)(?<!\S)-Database(?::\s*|\s+)(?<value>"[^"]*"|''[^'']*''|\S+)(?=\s|$)')
-    foreach ($databaseArgument in $databaseArguments) {
-        $databaseName = $databaseArgument.Groups['value'].Value.Trim([char[]]@('"', "'"))
-        if (-not $databaseName.Equals('AdventureGearAI', [System.StringComparison]::OrdinalIgnoreCase)) {
+    $databaseParameters = [regex]::Matches($Command, '(?i)(?<!\S)-Database(?=[:\s]|$)')
+    $validDatabaseTarget = '(?i)\A-Database(?::(?:AdventureGearAI|''AdventureGearAI''|"AdventureGearAI")(?=\s|$)|\s+(?:AdventureGearAI|''AdventureGearAI''|"AdventureGearAI")(?=\s|$))'
+    foreach ($databaseParameter in $databaseParameters) {
+        if (-not [regex]::IsMatch($Command.Substring($databaseParameter.Index), $validDatabaseTarget)) {
             return $false
         }
     }
@@ -145,9 +143,19 @@ function Test-PathIsDirectoryOrDescendant {
 foreach ($fixture in @(
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI'; Expected = $true; Name = 'space AdventureGearAI target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:AdventureGearAI'; Expected = $true; Name = 'colon AdventureGearAI target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database ''AdventureGearAI'''; Expected = $true; Name = 'space single-quoted AdventureGearAI target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database "AdventureGearAI"'; Expected = $true; Name = 'space double-quoted AdventureGearAI target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:''AdventureGearAI'''; Expected = $true; Name = 'colon single-quoted AdventureGearAI target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:"AdventureGearAI"'; Expected = $true; Name = 'colon double-quoted AdventureGearAI target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database master'; Expected = $false; Name = 'space master target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:master'; Expected = $false; Name = 'colon master target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database: AdventureGearAI'; Expected = $false; Name = 'colon whitespace target' }
+        [pscustomobject]@{ Command = "pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:'''AdventureGearAI'"; Expected = $false; Name = 'colon single-quoted token prefix target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:''AdventureGearAI'''''''; Expected = $false; Name = 'colon single-quoted token suffix target' }
         [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:"AdventureGearAI"foo'; Expected = $false; Name = 'colon quoted token suffix target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAIFoo'; Expected = $false; Name = 'unquoted token suffix target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database $database'; Expected = $false; Name = 'variable database target' }
+        [pscustomobject]@{ Command = 'pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database $(Get-Database)'; Expected = $false; Name = 'expression database target' }
     )) {
     if ((Test-ExplicitDatabaseSafety -Command $fixture.Command) -ne $fixture.Expected) {
         Add-Failure "Database safety fixture failed for $($fixture.Name)."
@@ -210,6 +218,20 @@ function Get-RunnablePowerShellCommands {
 
 if (@(Get-RunnablePowerShellCommands -Text '# pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database:master').Count -ne 0) {
     Add-Failure 'Command extraction fixture incorrectly treats a comment as runnable.'
+}
+if (@(Get-RunnablePowerShellCommands -Text @'
+```powershell
+pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database 'AdventureGearAI'
+```
+'@).Count -ne 1) {
+    Add-Failure 'Command extraction fixture does not recognize a standard code-block command.'
+}
+if (@(Get-RunnablePowerShellCommands -Text @'
+```powershell
+# pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Database AdventureGearAI
+```
+'@).Count -ne 0) {
+    Add-Failure 'Command extraction fixture incorrectly treats a commented code-block command as runnable.'
 }
 
 function Test-ByteArraysEqual {
