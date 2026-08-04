@@ -3,8 +3,8 @@ tags: DP-800, Reference
 GA: G-DXYJBX6BH8
 ---
 
-# DP-800T00-A: Develop AI-enabled database solutions
-A 3-day intermediate course covering how to design, develop, secure, optimize, and deploy AI-enabled database solutions using Microsoft SQL platforms. Prepares for the **Microsoft Certified: SQL AI Developer Associate** (exam DP-800). Topics span T-SQL programmability, CI/CD for database projects, vector search, embeddings, and Retrieval-Augmented Generation (RAG) in T-SQL.
+# DP-800 Reference
+> A 3-day intermediate course covering how to design, develop, secure, optimize, and deploy AI-enabled database solutions using Microsoft SQL platforms. Prepares for the **Microsoft Certified: SQL AI Developer Associate** (exam DP-800). Topics span T-SQL programmability, CI/CD for database projects, vector search, embeddings, and Retrieval-Augmented Generation (RAG) in T-SQL.
 
 ## Course
 
@@ -30,25 +30,14 @@ Course Survey: [https://aka.ms/dp800survey](https://aka.ms/dp800survey)
 [ESI Support](https://aka.ms/esisupport)
 
 ## Lab
-
 ### Skillable
-
 [ESI Labs](https://aka.ms/esilab)
 
 :::success
 Training key: `E9C6FD76A9443435`
 :::
 
-:::info
-Training key can only be redeemed once. Lab environment is valid for 6 months after redemption.
-:::
-
 ### Instructions
-
-:::warning
-Lab instructions are in **English only**. There are no localized versions of the lab exercises.
-:::
-
 [DP-800 Lab](https://microsoftlearning.github.io/mslearn-sql-developer/)
 
 [Lab Files (main.zip)](https://github.com/MicrosoftLearning/mslearn-sql-developer/archive/refs/heads/main.zip)
@@ -56,8 +45,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 ## Links
 ### LP1 - Design and develop database solutions
 #### M01 - Design and implement database objects with SQL
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/design-implement-database-objects/)
-
 [Temporal Tables](https://learn.microsoft.com/en-us/sql/relational-databases/tables/temporal-tables?view=sql-server-ver17)
 
 [In-Memory OLTP overview and usage scenarios](https://learn.microsoft.com/en-us/sql/relational-databases/in-memory-oltp/overview-and-usage-scenarios?view=sql-server-ver17)
@@ -69,8 +56,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [CREATE PARTITION FUNCTION (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-partition-function-transact-sql?view=sql-server-ver17)
 
 #### M02 - Implement programmability objects with SQL
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/implement-programmability-objects/)
-
 [DML Triggers](https://learn.microsoft.com/en-us/sql/relational-databases/triggers/dml-triggers?view=sql-server-ver17)
 
 [CREATE PROCEDURE (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-procedure-transact-sql?view=sql-server-ver17)
@@ -80,8 +65,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [CREATE VIEW (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-view-transact-sql?view=sql-server-ver17)
 
 #### M03 - Write advanced T-SQL code
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/write-advanced-sql-code/)
-
 [TRY...CATCH (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/try-catch-transact-sql?view=sql-server-ver17)
 
 [JSON Functions (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/json-functions-transact-sql?view=sql-server-ver17)
@@ -91,8 +74,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [WITH common_table_expression (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/queries/with-common-table-expression-transact-sql?view=sql-server-ver17)
 
 #### M04 - Implement SQL solutions by using AI-assisted tools
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/design-implement-sql-solutions-ai-assisted-tools/)
-
 [GitHub Copilot in SQL Server Management Studio](https://learn.microsoft.com/en-us/ssms/github-copilot/overview)
 
 [SQL MCP Server overview (Preview)](https://learn.microsoft.com/en-us/azure/data-api-builder/mcp/overview)
@@ -101,8 +82,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 
 ### LP2 - Secure, optimize, and deploy database solutions
 #### M05 - Implement data security and compliance with SQL
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/implement-data-security-compliance/)
-
 [Always Encrypted](https://learn.microsoft.com/en-us/sql/relational-databases/security/encryption/always-encrypted-database-engine?view=sql-server-ver17)
 
 [Dynamic Data Masking](https://learn.microsoft.com/en-us/sql/relational-databases/security/dynamic-data-masking?view=sql-server-ver17)
@@ -112,8 +91,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [Microsoft Entra authentication for Azure SQL](https://learn.microsoft.com/en-us/azure/azure-sql/database/authentication-aad-overview?view=azuresql)
 
 #### M06 - Optimize database performance
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/optimize-database-performance/)
-
 [Monitor performance by using the Query Store](https://learn.microsoft.com/en-us/sql/relational-databases/performance/monitoring-performance-by-using-the-query-store?view=sql-server-ver17)
 
 [vCore purchasing model - Azure SQL Database](https://learn.microsoft.com/en-us/azure/azure-sql/database/service-tiers-sql-database-vcore?view=azuresql)
@@ -123,8 +100,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [Execution plans](https://learn.microsoft.com/en-us/sql/relational-databases/performance/execution-plans?view=sql-server-ver17)
 
 #### M07 - Implement CI/CD by using SQL database projects
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/implement-cicd-sql-database-projects/)
-
 [SQL Database Projects](https://learn.microsoft.com/en-us/sql/tools/sql-database-projects/sql-database-projects?view=sql-server-ver17)
 
 [SQL Projects Automation](https://learn.microsoft.com/en-us/sql/tools/sql-database-projects/sql-projects-automation?view=sql-server-ver17)
@@ -134,8 +109,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [SqlPackage](https://learn.microsoft.com/en-us/sql/tools/sqlpackage/sqlpackage?view=sql-server-ver17)
 
 #### M08 - Integrate SQL solutions with Azure services
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/integrate-sql-solutions-azure-services/)
-
 [Data API builder overview](https://learn.microsoft.com/en-us/azure/data-api-builder/overview)
 
 [Quickstart: Use Data API builder with SQL](https://learn.microsoft.com/en-us/azure/data-api-builder/quickstart/basic-sql)
@@ -144,8 +117,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 
 ### LP3 - Implement AI capabilities in database solutions
 #### M09 - Design and implement models and embeddings with SQL
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/design-implement-models-embeddings-with-sql/)
-
 [CREATE EXTERNAL MODEL (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-external-model-transact-sql?view=sql-server-ver17)
 
 [AI_GENERATE_EMBEDDINGS (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/ai-generate-embeddings-transact-sql?view=sql-server-ver17)
@@ -157,8 +128,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [Intelligent applications and AI in SQL Server](https://learn.microsoft.com/en-us/sql/sql-server/ai/artificial-intelligence-intelligent-applications?view=sql-server-ver17)
 
 #### M10 - Design and implement intelligent search with SQL
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/design-implement-intelligent-search-with-sql/)
-
 [Full-Text Search](https://learn.microsoft.com/en-us/sql/relational-databases/search/full-text-search?view=sql-server-ver17)
 
 [VECTOR_DISTANCE (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/vector-distance-transact-sql?view=sql-server-ver17)
@@ -170,8 +139,6 @@ Lab instructions are in **English only**. There are no localized versions of the
 [Vector and embeddings FAQ](https://learn.microsoft.com/en-us/sql/sql-server/ai/vectors-frequently-asked-questions?view=sql-server-ver17)
 
 #### M11 - Design and implement RAG with SQL
-[Microsoft Learn Module](https://learn.microsoft.com/en-us/training/modules/design-implement-rag-with-sql/)
-
 [sys.sp_invoke_external_rest_endpoint (Transact-SQL)](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-invoke-external-rest-endpoint-transact-sql?view=sql-server-ver17)
 
 [CREATE DATABASE SCOPED CREDENTIAL (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-database-scoped-credential-transact-sql?view=sql-server-ver17)
