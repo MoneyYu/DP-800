@@ -62,7 +62,9 @@ GO
 /* CDC creates database-level DDL triggers that prevent dropping a
    memory-optimized table. M08 is the only module that enables CDC. Coordinate
    with its lifecycle lock, remove only its recorded capture, and disable
-   database CDC only when M08 enabled it and no other capture remains. */
+   database CDC only when M08 enabled it and no other capture remains. Keep
+   that lock through all teardown and state invalidation so M08 setup cannot
+   publish CDC state during this reset. */
 DECLARE @DisableCdcDatabase bit = 0;
 DECLARE @M08CaptureInstance sysname;
 DECLARE @M08CaptureTableObjectId int;
@@ -143,14 +145,6 @@ BEGIN TRY
 
     IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
         THROW 51084, 'M01 reset cannot remove its memory-optimized table while externally owned CDC remains enabled.', 1;
-END TRY
-BEGIN CATCH
-    IF @CdcOwnershipLockHeld = 1
-        EXEC sys.sp_releaseapplock
-            @Resource = N'DP800.M08.CdcOwnership',
-            @LockOwner = N'Session';
-    THROW;
-END CATCH;
 
 IF OBJECT_ID(N'catalog.ProductRelatedTo', N'U') IS NOT NULL DROP TABLE catalog.ProductRelatedTo;
 IF OBJECT_ID(N'catalog.ProductNode', N'U') IS NOT NULL DROP TABLE catalog.ProductNode;
@@ -183,13 +177,6 @@ IF EXISTS (SELECT 1 FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.
 DROP TABLE IF EXISTS catalog.ProductJsonTeaching;
 
 DROP TABLE IF EXISTS catalog.ProductCacheInMemory;
-IF @CdcOwnershipLockHeld = 1
-BEGIN
-    EXEC sys.sp_releaseapplock
-        @Resource = N'DP800.M08.CdcOwnership',
-        @LockOwner = N'Session';
-    SET @CdcOwnershipLockHeld = 0;
-END;
 
 /* Dropping an updatable ledger can retain an engine-managed dropped-ledger
    system table for verification. It is intentional and must not be removed.
@@ -211,7 +198,6 @@ IF EXISTS (SELECT 1 FROM sys.external_file_formats WHERE name = N'M01ProductMeta
     DROP EXTERNAL FILE FORMAT M01ProductMetadataFileFormat;
 IF EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = N'M01ProductMetadataSource')
     DROP EXTERNAL DATA SOURCE M01ProductMetadataSource;
-GO
 
 /* ---------------------------------------------------------------------------
    State reset: M01 and every dependent module (M02..M11) become NotStarted.
@@ -226,6 +212,22 @@ SET Status = N'NotStarted',
     ErrorLine = NULL,
     UpdatedAtUtc = SYSUTCDATETIME()
 WHERE ModuleNumber IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+
+IF @CdcOwnershipLockHeld = 1
+BEGIN
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
+    SET @CdcOwnershipLockHeld = 0;
+END;
+END TRY
+BEGIN CATCH
+    IF @CdcOwnershipLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
+    THROW;
+END CATCH;
 GO
 
 SET NOEXEC OFF;

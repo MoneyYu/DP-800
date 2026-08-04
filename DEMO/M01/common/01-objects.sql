@@ -117,7 +117,7 @@ SELECT ProductID,
        ProductName,
        JSON_VALUE(ProductMetadata, '$.frame') AS FrameMaterial,
        JSON_PATH_EXISTS(ProductMetadata, '$.frame') AS HasFrame,
-       JSON_CONTAINS(ProductMetadata, N'"aluminum"', '$.frame') AS IsAluminumFrame
+       JSON_CONTAINS(ProductMetadata, N'aluminum', '$.frame') AS IsAluminumFrame
 FROM catalog.Products
 WHERE ProductID = 1;
 GO

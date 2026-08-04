@@ -16,9 +16,31 @@ $bootstrapScript = Join-Path $demoRoot 'bootstrap\Invoke-Bootstrap.ps1'
 $moduleRunner = Join-Path $demoRoot 'scripts\Invoke-DemoModule.ps1'
 $sqlWrapper = Join-Path $demoRoot 'scripts\Invoke-Dp800Sql.ps1'
 $resetScript = Join-Path $demoRoot 'M01\reset\reset.sql'
+$m08SetupScript = Join-Path $demoRoot 'M08\common\01-product-api.sql'
 $failures = [System.Collections.Generic.List[string]]::new()
 
 function Add-Failure { param([string]$Message) $script:failures.Add($Message) }
+function Assert-True {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { Add-Failure $Message }
+}
+function Get-Source {
+    param([string]$RelativePath)
+    $path = Join-Path $repoRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Add-Failure "Missing source asset: $RelativePath"
+        return $null
+    }
+    return Get-Content -LiteralPath $path -Raw
+}
+function Get-SourceIndex {
+    param([string]$Text, [string]$Value, [switch]$Last)
+    if ($null -eq $Text) { return -1 }
+    if ($Last) {
+        return $Text.LastIndexOf($Value, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    return $Text.IndexOf($Value, [System.StringComparison]::OrdinalIgnoreCase)
+}
 function Invoke-Query {
     param([string]$Query)
     $result = & $script:sqlcmd.Source -S $Server -U $User -d AdventureGearAI -Q $Query -h -1 -W -b -C -I -x 2>&1
@@ -33,6 +55,23 @@ function Assert-Scalar {
     param([string]$Label, [string]$Expected, [string]$Actual)
     if ($Actual -ne $Expected) { Add-Failure "$Label returned '$Actual' (expected '$Expected')." }
 }
+function Get-M08CapturePresence {
+    return Get-Scalar @"
+DECLARE @CaptureExists bit = 0;
+IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+    EXEC sys.sp_executesql
+        N'SELECT @Exists = CONVERT(bit, CASE WHEN EXISTS
+        (
+            SELECT 1
+            FROM cdc.change_tables
+            WHERE source_object_id = OBJECT_ID(N''catalog.Products'')
+              AND capture_instance = N''AdventureGearM08Products''
+        ) THEN 1 ELSE 0 END);',
+        N'@Exists bit OUTPUT',
+        @Exists = @CaptureExists OUTPUT;
+SELECT CONVERT(varchar(1), @CaptureExists);
+"@
+}
 function Invoke-M01Reset {
     $output = & pwsh -NoProfile -File $sqlWrapper -InputFile $resetScript -Database AdventureGearAI -Server $Server -User $User 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -43,10 +82,48 @@ function Invoke-M01Runner {
     param([switch]$Force)
     $output = & pwsh -NoProfile -File $moduleRunner -Modules 1 -Force:$Force -Database AdventureGearAI -Server $Server -User $User 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "Normal M01 module runner failed. $($output -join ' ')"
+        $summary = @($output | Select-Object -Last 30) -join ' '
+        throw "Normal M01 module runner (Force=$Force) failed. $summary"
     }
     return ($output -join [Environment]::NewLine)
 }
+function Invoke-M08Setup {
+    $output = & pwsh -NoProfile -File $sqlWrapper -InputFile $m08SetupScript -Database AdventureGearAI -Server $Server -User $User 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Repository SQL wrapper failed for M08 setup. $($output -join ' ')"
+    }
+}
+
+$m01Objects = Get-Source 'DEMO\M01\common\01-objects.sql'
+$m01Specialized = Get-Source 'DEMO\M01\common\02-specialized-tables.sql'
+$m01Reset = Get-Source 'DEMO\M01\reset\reset.sql'
+
+Assert-True ($null -ne $m01Objects -and $m01Objects -match "(?i)JSON_CONTAINS\s*\(\s*ProductMetadata\s*,\s*N'aluminum'\s*,\s*'\$\.frame'\s*\)\s+AS\s+IsAluminumFrame") `
+    'M01 JSON_CONTAINS must pass the SQL scalar N''aluminum'' and expose IsAluminumFrame.'
+Assert-True ($null -ne $m01Objects -and $m01Objects -notmatch '(?i)JSON_CONTAINS\s*\(\s*ProductMetadata\s*,\s*N''"aluminum"''') `
+    'M01 JSON_CONTAINS must not quote the scalar as a JSON string.'
+
+$m01SetupLockAcquire = Get-SourceIndex $m01Specialized 'EXEC @CdcOwnershipLockResult = sys.sp_getapplock'
+$m01SetupXtpDdl = Get-SourceIndex $m01Specialized 'CREATE TABLE catalog.ProductCacheInMemory'
+$m01SetupStateInvalidation = Get-SourceIndex $m01Specialized 'WHERE ModuleNumber = 8'
+$m01SetupNormalRelease = Get-SourceIndex $m01Specialized 'SET @CdcOwnershipLockHeld = 0;' -Last
+Assert-True ($m01SetupLockAcquire -ge 0 -and $m01SetupXtpDdl -gt $m01SetupLockAcquire) `
+    'M01 specialized setup must acquire the M08 CDC lifecycle lock before XTP DDL.'
+Assert-True ($m01SetupStateInvalidation -ge 0 -and $m01SetupNormalRelease -gt $m01SetupXtpDdl -and $m01SetupNormalRelease -gt $m01SetupStateInvalidation) `
+    'M01 specialized setup must release the CDC lifecycle lock only after XTP DDL and M08 state invalidation.'
+Assert-True ($null -ne $m01Specialized -and $m01Specialized -match '(?is)BEGIN\s+CATCH.*?@CdcOwnershipLockHeld\s*=\s*1.*?sp_releaseapplock.*?THROW') `
+    'M01 specialized setup must release a held CDC lifecycle lock on errors.'
+
+$m01ResetLockAcquire = Get-SourceIndex $m01Reset 'EXEC @CdcOwnershipLockResult = sys.sp_getapplock'
+$m01ResetXtpDrop = Get-SourceIndex $m01Reset 'DROP TABLE IF EXISTS catalog.ProductCacheInMemory'
+$m01ResetStateInvalidation = Get-SourceIndex $m01Reset 'WHERE ModuleNumber IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)'
+$m01ResetNormalRelease = Get-SourceIndex $m01Reset 'SET @CdcOwnershipLockHeld = 0;' -Last
+Assert-True ($m01ResetLockAcquire -ge 0 -and $m01ResetXtpDrop -gt $m01ResetLockAcquire) `
+    'M01 reset must acquire the M08 CDC lifecycle lock before XTP teardown.'
+Assert-True ($m01ResetStateInvalidation -ge 0 -and $m01ResetNormalRelease -gt $m01ResetXtpDrop -and $m01ResetNormalRelease -gt $m01ResetStateInvalidation) `
+    'M01 reset must release the CDC lifecycle lock only after XTP teardown and dependent state invalidation.'
+Assert-True ($null -ne $m01Reset -and $m01Reset -match '(?is)BEGIN\s+CATCH.*?@CdcOwnershipLockHeld\s*=\s*1.*?sp_releaseapplock.*?THROW') `
+    'M01 reset must release a held CDC lifecycle lock on errors.'
 
 $sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
 if (-not $sqlcmd) { Write-Host 'SKIP: sqlcmd is not available.' -ForegroundColor Yellow; exit 0 }
@@ -106,6 +183,8 @@ SELECT CASE WHEN EXISTS
       AND JSON_CONTAINS(ProductMetadata, N'aluminum', '$.frame') = 1
 ) THEN 'PASS' ELSE 'FAIL' END;
 "@)
+    Assert-Scalar -Label 'IsAluminumFrame' -Expected '1' -Actual `
+        (Get-Scalar "SELECT JSON_CONTAINS(ProductMetadata, N'aluminum', '$.frame') FROM catalog.Products WHERE ProductID = 1;")
     Assert-Scalar -Label 'Safe native json modify demonstration' -Expected 'M01-safe-modified' -Actual `
         (Get-Scalar "SELECT JSON_VALUE(Payload, '$.lesson') FROM catalog.ProductJsonTeaching WHERE ProductJsonTeachingID = 1;")
 
@@ -144,6 +223,28 @@ SELECT CASE WHEN EXISTS
     }
     Assert-Scalar -Label 'M01 forced reapply ledger' -Expected '1' -Actual `
         (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'ops.InventoryLedger') AND ledger_type = 2;")
+
+    # Exercise the serialized M08 -> M01 -> M08 lifecycle. A real concurrent
+    # collision is nondeterministic; these adjacent transitions prove the state
+    # contract at each side of the shared exclusive CDC ownership lock.
+    Invoke-M08Setup
+    Invoke-Query -Query "UPDATE ops.DemoModuleState SET Status = N'Completed', UpdatedAtUtc = SYSUTCDATETIME() WHERE ModuleNumber = 8;" | Out-Null
+    Assert-Scalar -Label 'M08 capture before M01 collision' -Expected '1' -Actual `
+        (Get-M08CapturePresence)
+
+    $m01CollisionOutput = Invoke-M01Runner -Force
+    if ($m01CollisionOutput -notmatch '02-specialized-tables\.sql') {
+        Add-Failure "M01 collision reapply did not execute 02-specialized-tables.sql. Output: $m01CollisionOutput"
+    }
+    Assert-Scalar -Label 'M01 collision invalidates M08 state' -Expected 'NotStarted' -Actual `
+        (Get-Scalar 'SELECT Status FROM ops.DemoModuleState WHERE ModuleNumber = 8;')
+    Assert-Scalar -Label 'M01 collision removes M08 capture' -Expected '0' -Actual `
+        (Get-M08CapturePresence)
+
+    Invoke-M08Setup
+    Invoke-Query -Query "UPDATE ops.DemoModuleState SET Status = N'Completed', UpdatedAtUtc = SYSUTCDATETIME() WHERE ModuleNumber = 8;" | Out-Null
+    Assert-Scalar -Label 'M08 reapply after M01 collision' -Expected '1' -Actual `
+        (Get-M08CapturePresence)
 
     Invoke-M01Reset
     Assert-Scalar -Label 'M01 reset preserves core products' -Expected $coreProductCount -Actual `

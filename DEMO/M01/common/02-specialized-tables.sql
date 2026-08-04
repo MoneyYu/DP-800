@@ -20,7 +20,9 @@ GO
 /* Reapply safely after a prior direct run. The M01 reset owns the full teardown.
 */
 /* M08-owned CDC prevents memory-optimized table DDL. Before replacing the M01
-   cache, remove only the recorded M08 capture under its lifecycle lock. */
+   cache, remove only the recorded M08 capture under its lifecycle lock. Keep
+   that lock through XTP DDL and M08 state invalidation so M08 setup cannot
+   publish a new capture between either operation. */
 DECLARE @DisableCdcDatabase bit = 0;
 DECLARE @M08CaptureInstance sysname;
 DECLARE @M08CaptureTableObjectId int;
@@ -103,35 +105,9 @@ BEGIN TRY
 
     IF EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
         THROW 51086, 'M01 specialized setup cannot replace its memory-optimized table while externally owned CDC remains enabled.', 1;
-END TRY
-BEGIN CATCH
-    IF @CdcOwnershipLockHeld = 1
-        EXEC sys.sp_releaseapplock
-            @Resource = N'DP800.M08.CdcOwnership',
-            @LockOwner = N'Session';
-    THROW;
-END CATCH;
 
 IF OBJECT_ID(N'catalog.ProductCacheInMemory', N'U') IS NOT NULL
     DROP TABLE catalog.ProductCacheInMemory;
-IF @CdcOwnershipLockHeld = 1
-BEGIN
-    EXEC sys.sp_releaseapplock
-        @Resource = N'DP800.M08.CdcOwnership',
-        @LockOwner = N'Session';
-    SET @CdcOwnershipLockHeld = 0;
-END;
-
-IF @M08CdcDecommissioned = 1
-    UPDATE ops.DemoModuleState
-    SET Status = N'NotStarted',
-        StartedAtUtc = NULL,
-        CompletedAtUtc = NULL,
-        LastError = NULL,
-        ErrorNumber = NULL,
-        ErrorLine = NULL,
-        UpdatedAtUtc = SYSUTCDATETIME()
-    WHERE ModuleNumber = 8;
 
 IF OBJECT_ID(N'ops.InventoryLedger', N'U') IS NOT NULL
     DROP TABLE ops.InventoryLedger;
@@ -148,7 +124,6 @@ IF EXISTS (SELECT 1 FROM sys.external_file_formats WHERE name = N'M01ProductMeta
     DROP EXTERNAL FILE FORMAT M01ProductMetadataFileFormat;
 IF EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = N'M01ProductMetadataSource')
     DROP EXTERNAL DATA SOURCE M01ProductMetadataSource;
-GO
 
 /* ---------------------------------------------------------------------------
    1) In-Memory OLTP. The memory-optimized filegroup is created only where the
@@ -190,6 +165,33 @@ BEGIN
 END;
 ELSE
     PRINT N'M01 In-Memory OLTP skipped: SERVERPROPERTY(''IsXTPSupported'') is not 1.';
+
+IF @M08CdcDecommissioned = 1
+    UPDATE ops.DemoModuleState
+    SET Status = N'NotStarted',
+        StartedAtUtc = NULL,
+        CompletedAtUtc = NULL,
+        LastError = NULL,
+        ErrorNumber = NULL,
+        ErrorLine = NULL,
+        UpdatedAtUtc = SYSUTCDATETIME()
+    WHERE ModuleNumber = 8;
+
+IF @CdcOwnershipLockHeld = 1
+BEGIN
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
+    SET @CdcOwnershipLockHeld = 0;
+END;
+END TRY
+BEGIN CATCH
+    IF @CdcOwnershipLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
+    THROW;
+END CATCH;
 GO
 
 /* ---------------------------------------------------------------------------
