@@ -315,9 +315,9 @@ DROP DATABASE [$tdeDatabase];
             $createdTdeCollisionCertificate = $false
 
             # New databases inherit database-level extended properties from
-            # model. The duplicate marker forces sp_addextendedproperty to
-            # fail after CREATE DATABASE but before this demo can write its
-            # own marker.
+            # model. This duplicate marker deterministically makes
+            # sp_addextendedproperty fail after CREATE DATABASE and before
+            # this demo can write its own marker.
             Invoke-Query -Database 'model' -Query @"
 EXEC sys.sp_addextendedproperty
     @name = N'DP800_M05_TdeDemoOwnershipToken',

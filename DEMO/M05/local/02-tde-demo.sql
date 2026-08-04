@@ -53,16 +53,16 @@ BEGIN TRY
     SELECT @CertificateThumbprint = thumbprint
     FROM sys.certificates
     WHERE name = @Certificate;
-    IF @CertificateThumbprint IS NULL
+    SET @OwnsCertificate = CASE WHEN @CertificateThumbprint IS NULL THEN 0 ELSE 1 END;
+    IF @OwnsCertificate = 0
         THROW 51055, N'Could not record ownership of DP800_M05_TdeDemoCertificate.', 1;
-    SET @OwnsCertificate = 1;
 
     SET @Sql = N'CREATE DATABASE ' + QUOTENAME(@DemoDatabase) + N';';
     EXEC (@Sql);
     SET @DatabaseId = DB_ID(@DemoDatabase);
-    IF @DatabaseId IS NULL
+    SET @OwnsDatabase = CASE WHEN @DatabaseId IS NULL THEN 0 ELSE 1 END;
+    IF @OwnsDatabase = 0
         THROW 51056, N'Could not record ownership of DP800_M05_TdeDemo.', 1;
-    SET @OwnsDatabase = 1;
     SET @Sql = N'USE ' + QUOTENAME(@DemoDatabase) + N';
                  EXEC sys.sp_addextendedproperty
                      @name = N''DP800_M05_TdeDemoOwnershipToken'',
