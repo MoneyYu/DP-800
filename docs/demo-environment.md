@@ -18,7 +18,7 @@ The implemented Azure scope follows the DP-800 decks and speaker notes under [PP
 | Other providers | AzAPI `~> 2.11`, Random `~> 3.9`, HTTP `~> 3.6` |
 | Default location | `japaneast` |
 | AI override | `ai_location`; affects Azure OpenAI/model placement only |
-| Database Watcher | Preview resource fixed to `Japan West` with `Microsoft.DatabaseWatcher/watchers@2025-01-02` |
+| Database Watcher | Preview resource fixed to `Japan West` with `Microsoft.DatabaseWatcher/watchers@2024-10-01-preview` (Japan East is not a supported region; verify the API version with `az provider show --namespace Microsoft.DatabaseWatcher`) |
 
 The common `DP800-<group_postfix>` resource group is always declared. The AI resources use a separate `DP800-<group_postfix>-AI` resource group; its SQL server/database remain in `location`, while Azure OpenAI uses `ai_location` when supplied.
 
@@ -36,6 +36,8 @@ All main feature toggles default to `true`, so the default plan retains the broa
 | `enable_operations` | Database Watcher preview, Key Vault Standard with RBAC authorization and deployer `Key Vault Secrets Officer`, and a system-identity Automation account. |
 
 When operations, gallery, and `enable_azure_services_firewall_demo` are all enabled, Automation also creates a password-based credential, PowerShell 7.2 SQL maintenance runbook, daily schedule, and job schedule against the second elastic-pool database. If gallery or the broad Azure-services firewall demonstration is disabled, those maintenance objects are omitted while the base operations resources remain.
+
+SQL VM patching is owned by the SQL IaaS Agent `auto_patching` block on `azurerm_mssql_virtual_machine`. `MicrosoftSQLServer` marketplace images are not in the [supported image list for Automatic VM Guest Patching](https://learn.microsoft.com/azure/virtual-machines/automatic-vm-guest-patching#supported-os-images), so `AutomaticByPlatform` is rejected by ARM. Both virtual machines therefore use `patch_mode = "Manual"` with `automatic_updates_enabled = false`, because running two overlapping patching mechanisms is explicitly discouraged.
 
 `enable_legacy_key_auth_demo=false` is intentional. Setting it true re-enables retained storage-key paths for SQL auditing/VM automated backup where the associated gallery and VM resources exist; it is not part of the default managed-identity/RBAC posture.
 
@@ -102,7 +104,7 @@ The relevant Microsoft references are [CREATE EXTERNAL MODEL](https://learn.micr
 
 ### Identity prerequisites and propagation
 
-The applying workstation must have PowerShell 7, Azure CLI, and the `SqlServer` PowerShell module. Azure CLI must be signed in as the configured SQL Entra administrator identity.
+The applying workstation must have PowerShell 7 and Azure CLI. No `SqlServer` PowerShell module is required: the deployment script executes the SQL script through the `System.Data.SqlClient` types bundled with PowerShell 7. Azure CLI must be signed in as the configured SQL Entra administrator identity.
 
 The deployment script requests an Azure SQL token, reads the JWT `oid`, and compares it with `DP800_SQL_ADMIN_OBJECT_ID`. A mismatch stops deployment before SQL execution. It then verifies the SQL server managed identity and OpenAI RBAC assignment, waits for propagation, and retries identity-related `401`/`403` errors. This is an Entra token and managed-identity path only; no Azure OpenAI API keys are supported.
 

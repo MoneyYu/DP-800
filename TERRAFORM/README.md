@@ -45,14 +45,11 @@ Terraform refuses to plan without this confirmation. Do not set it merely to byp
 When both `enable_core_sql_ai` and `enable_data_plane` are `true`, the machine running `terraform apply` also needs:
 
 - PowerShell 7;
-- Azure CLI logged in as the identity configured by `admin_object_id` (or the current AzureRM client identity when it is null);
-- the PowerShell `SqlServer` module, providing `Invoke-Sqlcmd`.
+- Azure CLI logged in as the identity configured by `admin_object_id` (or the current AzureRM client identity when it is null).
 
-```powershell
-Install-Module SqlServer -Scope CurrentUser
-```
+No `SqlServer` PowerShell module is needed. [scripts/Deploy-AiDataPlane.ps1](scripts/Deploy-AiDataPlane.ps1) executes the SQL script with the `System.Data.SqlClient` types bundled with PowerShell 7: it strips the placeholder `:setvar` declarations, substitutes the `$(NAME)` sqlcmd variables, splits the script into `GO` batches while ignoring `GO` inside comments, string literals and bracketed identifiers, and runs every batch over one connection so session settings such as `SET XACT_ABORT ON` persist.
 
-[scripts/Deploy-AiDataPlane.ps1](scripts/Deploy-AiDataPlane.ps1) obtains an Azure SQL bearer token from Azure CLI, decodes its `oid` claim, and stops if it does not match the configured SQL Microsoft Entra administrator object ID. It then waits for the SQL server managed identity and `Cognitive Services OpenAI User` assignments to propagate. Transient identity/RBAC `401` and `403` failures are retried. No API key is used or expected.
+It obtains an Azure SQL bearer token from Azure CLI, decodes its `oid` claim, and stops if it does not match the configured SQL Microsoft Entra administrator object ID. It then waits for the SQL server managed identity and `Cognitive Services OpenAI User` assignments to propagate. Transient identity/RBAC `401` and `403` failures and documented Azure SQL transient faults, including serverless auto-pause resume, are retried. No API key is used or expected.
 
 ## Variables and feature dependencies
 

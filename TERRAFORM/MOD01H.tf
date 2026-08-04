@@ -30,6 +30,13 @@ resource "azurerm_public_ip" "lab01h" {
   sku                 = "Standard"
 
   tags = local.default_tags
+
+  # Azure injects ip_tags such as FirstPartyUsage automatically. Without this the
+  # public IP is force-replaced on every plan, which deadlocks against the network
+  # interface that still references it.
+  lifecycle {
+    ignore_changes = [ip_tags]
+  }
 }
 
 resource "azurerm_network_security_group" "lab01h" {
@@ -130,12 +137,21 @@ resource "azurerm_windows_virtual_machine" "lab01h" {
     version   = "latest"
   }
 
+  # MicrosoftSQLServer marketplace images are not in the supported image list for
+  # Automatic VM Guest Patching, so AutomaticByPlatform is rejected by ARM. Patching
+  # is owned by the SQL IaaS Agent auto_patching block below; only one patching
+  # mechanism may be active, so Windows automatic updates stay off here.
   provision_vm_agent        = true
-  automatic_updates_enabled = true
-  patch_assessment_mode     = "AutomaticByPlatform"
-  patch_mode                = "AutomaticByPlatform"
-  reboot_setting            = "IfRequired"
+  automatic_updates_enabled = false
+  patch_assessment_mode     = "ImageDefault"
+  patch_mode                = "Manual"
   timezone                  = "Taipei Standard Time"
+
+  # The SQL IaaS Agent enables a system-assigned identity for the SQL best
+  # practices assessment. Declaring it keeps Terraform from stripping it back off.
+  identity {
+    type = "SystemAssigned"
+  }
 
   tags = local.default_tags
 }
