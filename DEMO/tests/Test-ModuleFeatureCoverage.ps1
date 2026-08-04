@@ -33,6 +33,13 @@ function Get-RequiredText {
     param([string]$RelativePath)
     return Get-Text -Path (Join-Path $repoRoot $RelativePath)
 }
+function Test-RecordedMasterKeyCleanupGuard {
+    param([AllowEmptyString()][string]$Text)
+
+    # A test-created master key belongs to this test only while its current
+    # GUID still exactly matches the GUID recorded at creation time.
+    return $Text -match '(?is)\$currentMasterKeyIdentity\s*=\s*Get-Scalar.*?key_guid.*?if\s*\(\s*\[string\]::IsNullOrWhiteSpace\(\$currentMasterKeyIdentity\)\s*\).*?Add-Failure\s+.*?(?:absent|missing).*?elseif\s*\(\s*\$currentMasterKeyIdentity\s*-cne\s*\$testMasterKeyIdentity\s*\).*?Add-Failure\s+.*?(?:changed|differ).*?else\s*\{.*?DROP MASTER KEY;'
+}
 function Normalize-DockerfileSource {
     param([AllowEmptyString()][string]$Text)
 
@@ -91,6 +98,7 @@ $m03 = Get-RequiredText 'DEMO\M03\local\01-advanced-queries.sql'
 $m05 = Get-RequiredText 'DEMO\M05\common\01-security.sql'
 $m05Local = Get-RequiredText 'DEMO\M05\local\01-verify-security.sql'
 $m05Reset = Get-RequiredText 'DEMO\M05\reset\reset.sql'
+$m03M05Runtime = Get-RequiredText 'DEMO\tests\Test-M03M05FeatureCoverageRuntime.ps1'
 $m06 = Get-RequiredText 'DEMO\M06\common\01-workload.sql'
 $m06Local = @(
     Get-RequiredText 'DEMO\M06\local\01-plans-query-store-dmvs.sql'
@@ -198,6 +206,38 @@ foreach ($requirement in @(
     @{ Text = "$m11`n$m11Azure"; Pattern = '(?i)catalog\.Products'; Message = 'M11 must retain canonical catalog product grounding.' }
 )) {
     Assert-Present -Text $requirement.Text -Pattern $requirement.Pattern -Message $requirement.Message
+}
+
+# TDE cleanup must never drop a master key whose GUID changed after this test
+# created its temporary key. The fixtures protect the guard itself as well as
+# the runtime test's use of it.
+$guardedMasterKeyCleanupFixture = @'
+$currentMasterKeyIdentity = Get-Scalar -Database 'master' -Query @"
+SELECT CONVERT(nvarchar(36), key_guid) FROM sys.symmetric_keys;
+"@
+if ([string]::IsNullOrWhiteSpace($currentMasterKeyIdentity)) {
+    Add-Failure 'M05 TDE test-owned master database master key is absent; cleanup will not drop an unknown master key.'
+}
+elseif ($currentMasterKeyIdentity -cne $testMasterKeyIdentity) {
+    Add-Failure 'M05 TDE test-owned master database master key changed; cleanup will not drop a different master key.'
+}
+else {
+    Invoke-Query -Database 'master' -Query 'DROP MASTER KEY;' | Out-Null
+}
+'@
+$unsafeMasterKeyCleanupFixture = @'
+if ($createdTestMasterKey) {
+    Invoke-Query -Database 'master' -Query 'DROP MASTER KEY;' | Out-Null
+}
+'@
+if (-not (Test-RecordedMasterKeyCleanupGuard -Text $guardedMasterKeyCleanupFixture)) {
+    Add-Failure 'TDE master key cleanup guard self-fixture must be accepted.'
+}
+if (Test-RecordedMasterKeyCleanupGuard -Text $unsafeMasterKeyCleanupFixture) {
+    Add-Failure 'TDE master key cleanup guard unsafe self-fixture must be rejected.'
+}
+if (-not (Test-RecordedMasterKeyCleanupGuard -Text $m03M05Runtime)) {
+    Add-Failure 'M03/M05 runtime TDE cleanup must query the current master key GUID and drop only its recorded test-owned key.'
 }
 
 # M01 and DEMO root documentation must distinguish feature support from data volume.

@@ -378,8 +378,21 @@ SELECT CASE WHEN DB_ID(N'$tdeDatabase') IS NOT NULL
                 Add-Failure 'M05 TDE test retained its temporary master key because TDE resources were not fully cleaned up.'
             }
             else {
-                Invoke-Query -Database 'master' -Query 'DROP MASTER KEY;' | Out-Null
-                if ((Get-Scalar -Database 'master' -Query @"
+                $currentMasterKeyIdentity = Get-Scalar -Database 'master' -Query @"
+SET NOCOUNT ON;
+SELECT CONVERT(nvarchar(36), key_guid)
+FROM sys.symmetric_keys
+WHERE name = N'##MS_DatabaseMasterKey##';
+"@
+                if ([string]::IsNullOrWhiteSpace($currentMasterKeyIdentity)) {
+                    Add-Failure 'M05 TDE test-owned master database master key is absent; cleanup will not drop an unknown master key.'
+                }
+                elseif ($currentMasterKeyIdentity -cne $testMasterKeyIdentity) {
+                    Add-Failure 'M05 TDE test-owned master database master key changed; cleanup will not drop a different master key.'
+                }
+                else {
+                    Invoke-Query -Database 'master' -Query 'DROP MASTER KEY;' | Out-Null
+                    if ((Get-Scalar -Database 'master' -Query @"
 SET NOCOUNT ON;
 SELECT CASE WHEN EXISTS
 (
@@ -388,10 +401,11 @@ SELECT CASE WHEN EXISTS
     WHERE name = N'##MS_DatabaseMasterKey##'
 ) THEN N'FAIL' ELSE N'PASS' END;
 "@) -ne 'PASS') {
-                    Add-Failure 'M05 TDE test-owned master database master key was not removed.'
-                }
-                else {
-                    $createdTestMasterKey = $false
+                        Add-Failure 'M05 TDE test-owned master database master key was not removed.'
+                    }
+                    else {
+                        $createdTestMasterKey = $false
+                    }
                 }
             }
         }
