@@ -17,6 +17,19 @@ SET QUOTED_IDENTIFIER ON;
 SET NUMERIC_ROUNDABORT OFF;
 GO
 
+/* Keep the M01 lifecycle lock outermost. M01 reset takes this lock before the
+   nested M08 CDC ownership lock, preventing lock-order inversion. */
+DECLARE @M01LifecycleLockResult int;
+EXEC @M01LifecycleLockResult = sys.sp_getapplock
+    @Resource = N'DP800.M01.Lifecycle',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
+
+IF @M01LifecycleLockResult < 0
+    THROW 51087, 'M01 specialized setup could not acquire the module lifecycle lock.', 1;
+GO
+
 /* Reapply safely after a prior direct run. The M01 reset owns the full teardown.
 */
 /* M08-owned CDC prevents memory-optimized table DDL. Before replacing the M01
@@ -359,4 +372,9 @@ ELSE
 GO
 
 PRINT N'M01 specialized tables created against AdventureGearAI.';
+GO
+
+EXEC sys.sp_releaseapplock
+    @Resource = N'DP800.M01.Lifecycle',
+    @LockOwner = N'Session';
 GO

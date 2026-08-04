@@ -73,21 +73,47 @@ DECLARE @ExpectedM08CaptureInstance sysname = N'AdventureGearM08Products';
 DECLARE @M08CaptureExists bit = 0;
 DECLARE @RemainingCaptureCount int = 0;
 DECLARE @ExternallyOwnedCdcRemainsEnabled bit = 0;
+DECLARE @M01LifecycleLockResult int;
+DECLARE @M01LifecycleLockHeld bit = 0;
 DECLARE @CdcOwnershipLockResult int;
 DECLARE @CdcOwnershipLockHeld bit = 0;
 
-EXEC @CdcOwnershipLockResult = sys.sp_getapplock
-    @Resource = N'DP800.M08.CdcOwnership',
+EXEC @M01LifecycleLockResult = sys.sp_getapplock
+    @Resource = N'DP800.M01.Lifecycle',
     @LockMode = N'Exclusive',
     @LockOwner = N'Session',
     @LockTimeout = 60000;
 
-IF @CdcOwnershipLockResult < 0
-    THROW 51083, 'M01 reset could not acquire the CDC ownership lock.', 1;
+IF @M01LifecycleLockResult < 0
+    THROW 51087, 'M01 reset could not acquire the module lifecycle lock.', 1;
 
-SET @CdcOwnershipLockHeld = 1;
+SET @M01LifecycleLockHeld = 1;
 
 BEGIN TRY
+    /* The runner maintains Running across all M01 setup and inspection
+       subprocesses. Reject reset rather than dropping objects mid-lifecycle. */
+    IF EXISTS
+    (
+        SELECT 1
+        FROM ops.DemoModuleState
+        WHERE ModuleNumber = 1
+          AND Status = N'Running'
+    )
+        THROW 51088, 'M01 reset refused while Module 1 is Running; wait for setup to finish before resetting.', 1;
+
+    /* M01 owns the outer lifecycle lock; M08 CDC ownership remains the inner
+       lock in every M01 path so CDC/XTP setup and reset cannot deadlock. */
+    EXEC @CdcOwnershipLockResult = sys.sp_getapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Session',
+        @LockTimeout = 60000;
+
+    IF @CdcOwnershipLockResult < 0
+        THROW 51083, 'M01 reset could not acquire the CDC ownership lock.', 1;
+
+    SET @CdcOwnershipLockHeld = 1;
+
     IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
        AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NOT NULL
        AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NOT NULL
@@ -225,11 +251,22 @@ BEGIN
         @LockOwner = N'Session';
     SET @CdcOwnershipLockHeld = 0;
 END;
+IF @M01LifecycleLockHeld = 1
+BEGIN
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M01.Lifecycle',
+        @LockOwner = N'Session';
+    SET @M01LifecycleLockHeld = 0;
+END;
 END TRY
 BEGIN CATCH
     IF @CdcOwnershipLockHeld = 1
         EXEC sys.sp_releaseapplock
             @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
+    IF @M01LifecycleLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M01.Lifecycle',
             @LockOwner = N'Session';
     THROW;
 END CATCH;

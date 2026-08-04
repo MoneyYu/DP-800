@@ -29,6 +29,20 @@ SET QUOTED_IDENTIFIER ON;
 SET NUMERIC_ROUNDABORT OFF;
 GO
 
+/* Share a lifecycle lock with reset. The runner keeps Module 1 in Running
+   state across its separate setup scripts; this lock also protects direct
+   execution of this script from a concurrent scoped reset. */
+DECLARE @M01LifecycleLockResult int;
+EXEC @M01LifecycleLockResult = sys.sp_getapplock
+    @Resource = N'DP800.M01.Lifecycle',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
+
+IF @M01LifecycleLockResult < 0
+    THROW 51087, 'M01 object setup could not acquire the module lifecycle lock.', 1;
+GO
+
 /* ---------------------------------------------------------------------------
    Idempotent teardown of module-owned objects (never the canonical core).
    * 以等冪方式只清除本模組物件，絕不清除標準核心。
@@ -208,4 +222,9 @@ WHERE sourceNode.ProductID = 1 AND targetNode.ProductID IN (4, 7, 8);
 GO
 
 PRINT N'M01 objects created against AdventureGearAI (catalog/sales extensions).';
+GO
+
+EXEC sys.sp_releaseapplock
+    @Resource = N'DP800.M01.Lifecycle',
+    @LockOwner = N'Session';
 GO

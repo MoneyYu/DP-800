@@ -94,6 +94,12 @@ function Invoke-M08Setup {
         throw "Repository SQL wrapper failed for M08 setup. $($output -join ' ')"
     }
 }
+function Invoke-M01Inspect {
+    param([string]$Name)
+    $inputFile = Join-Path $demoRoot "M01\local\$Name"
+    $output = & pwsh -NoProfile -File $sqlWrapper -InputFile $inputFile -Database AdventureGearAI -Server $Server -User $User 2>&1
+    return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output -join [Environment]::NewLine) }
+}
 function Get-CaptureFingerprint {
     param([string]$CaptureInstance)
     return Get-Scalar @"
@@ -125,6 +131,20 @@ ELSE
 $m01Objects = Get-Source 'DEMO\M01\common\01-objects.sql'
 $m01Specialized = Get-Source 'DEMO\M01\common\02-specialized-tables.sql'
 $m01Reset = Get-Source 'DEMO\M01\reset\reset.sql'
+
+$m01ObjectLifecycleAcquire = Get-SourceIndex $m01Objects "Resource = N'DP800.M01.Lifecycle'"
+$m01ObjectLifecycleRelease = Get-SourceIndex $m01Objects 'EXEC sys.sp_releaseapplock' -Last
+$m01SpecializedLifecycleAcquire = Get-SourceIndex $m01Specialized "Resource = N'DP800.M01.Lifecycle'"
+$m01SpecializedLifecycleRelease = Get-SourceIndex $m01Specialized 'EXEC sys.sp_releaseapplock' -Last
+$m01ResetLifecycleAcquire = Get-SourceIndex $m01Reset "Resource = N'DP800.M01.Lifecycle'"
+$m01ResetRunningGuard = Get-SourceIndex $m01Reset "M01 reset refused while Module 1 is Running"
+$m01ResetCdcAcquire = Get-SourceIndex $m01Reset "Resource = N'DP800.M08.CdcOwnership'"
+Assert-True ($m01ObjectLifecycleAcquire -ge 0 -and $m01ObjectLifecycleRelease -gt $m01ObjectLifecycleAcquire) `
+    'M01 object setup must hold and release the M01 lifecycle lock.'
+Assert-True ($m01SpecializedLifecycleAcquire -ge 0 -and $m01SpecializedLifecycleRelease -gt $m01SpecializedLifecycleAcquire) `
+    'M01 specialized setup must hold and release the M01 lifecycle lock.'
+Assert-True ($m01ResetLifecycleAcquire -ge 0 -and $m01ResetRunningGuard -gt $m01ResetLifecycleAcquire -and $m01ResetCdcAcquire -gt $m01ResetRunningGuard) `
+    'M01 reset must hold its lifecycle lock and reject Running before acquiring the M08 CDC lock.'
 
 Assert-True ($null -ne $m01Objects -and $m01Objects -match "(?i)JSON_CONTAINS\s*\(\s*ProductMetadata\s*,\s*N'aluminum'\s*,\s*'\$\.frame'\s*\)\s+AS\s+IsAluminumFrame") `
     'M01 JSON_CONTAINS must pass the SQL scalar N''aluminum'' and expose IsAluminumFrame.'
@@ -351,6 +371,24 @@ EXEC sys.sp_cdc_enable_table
         (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'catalog.ProductSkuSequenceDemo');")
     Assert-Scalar -Label 'M01 partial-reset constraint results removed' -Expected '0' -Actual `
         (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'catalog.ProductConstraintViolationLog');")
+
+    # A valid partial reset retains the foreign-CDC-protected XTP cache but
+    # removes all other M01 objects. Both read-only inspections must report
+    # those exact absences rather than failing on a missing table.
+    $partialGeneralInspect = Invoke-M01Inspect -Name '01-inspect.sql'
+    if ($partialGeneralInspect.ExitCode -ne 0) {
+        Add-Failure "M01 general inspect must tolerate the valid partial-reset baseline. Output: $($partialGeneralInspect.Output)"
+    }
+    if ($partialGeneralInspect.Output -notmatch 'catalog\.ProductPrice is absent after an M01 scoped reset') {
+        Add-Failure "M01 general partial-reset inspect did not report the absent temporal table. Output: $($partialGeneralInspect.Output)"
+    }
+    $partialSpecializedInspect = Invoke-M01Inspect -Name '02-inspect-specialized.sql'
+    if ($partialSpecializedInspect.ExitCode -ne 0) {
+        Add-Failure "M01 specialized inspect must tolerate the valid partial-reset baseline. Output: $($partialSpecializedInspect.Output)"
+    }
+    if ($partialSpecializedInspect.Output -notmatch 'catalog\.ProductJsonTeaching is absent after an M01 scoped reset') {
+        Add-Failure "M01 specialized partial-reset inspect did not report the absent JSON teaching table. Output: $($partialSpecializedInspect.Output)"
+    }
 
     $foreignReapplyOutput = Invoke-M01Runner -Force
     if ($foreignReapplyOutput -notmatch 'M01 In-Memory OLTP skipped: externally owned CDC remains enabled') {
