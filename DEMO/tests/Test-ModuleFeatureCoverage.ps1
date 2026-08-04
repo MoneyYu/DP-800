@@ -49,7 +49,7 @@ function Test-CanonicalSql2025DockerRecipe {
     $expectedInstructions = @(
         [pscustomobject]@{ Keyword = 'FROM'; Arguments = 'mcr.microsoft.com/mssql/server:2025-latest' }
         [pscustomobject]@{ Keyword = 'USER'; Arguments = 'root' }
-        [pscustomobject]@{ Keyword = 'RUN'; Arguments = 'curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*' }
+        [pscustomobject]@{ Keyword = 'RUN'; Arguments = 'wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*' }
         [pscustomobject]@{ Keyword = 'USER'; Arguments = 'mssql' }
         [pscustomobject]@{ Keyword = 'CMD'; Arguments = '["/opt/mssql/bin/sqlservr"]' }
     )
@@ -268,16 +268,16 @@ else {
 $canonicalDockerRecipe = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
 USER mssql
 CMD ["/opt/mssql/bin/sqlservr"]
 '@
 $continuedCanonicalDockerRecipe = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL \
+RUN wget -qO \
+    /etc/apt/sources.list.d/mssql-server-2025.list \
     https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list \
-    -o /etc/apt/sources.list.d/mssql-server-2025.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
     mssql-server-fts mssql-server-polybase \
@@ -287,16 +287,29 @@ CMD ["/opt/mssql/bin/sqlservr"]
 '@
 $crlfCanonicalDockerRecipe = $canonicalDockerRecipe -replace "`n", "`r`n"
 $dockerFixtures = @{
+    CurlRecipe = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
+USER mssql
+CMD ["/opt/mssql/bin/sqlservr"]
+'@
+    UrlOption = @'
+FROM mcr.microsoft.com/mssql/server:2025-latest
+USER root
+RUN wget -qO https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
+USER mssql
+CMD ["/opt/mssql/bin/sqlservr"]
+'@
     FakeHeaderUrl = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL -H "X-Repository: https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list" https://untrusted.example/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
-RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
-RUN rm -rf /var/lib/apt/lists/*
+RUN wget --header="X-Repository: https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list" -qO /etc/apt/sources.list.d/mssql-server-2025.list https://untrusted.example/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
 USER mssql
+CMD ["/opt/mssql/bin/sqlservr"]
 '@
     CommentUrl = @'
-# RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+# RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
 RUN curl -fsSL https://untrusted.example/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
@@ -315,7 +328,7 @@ USER mssql
     VersionPinnedPackages = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 RUN apt-get install -y --no-install-recommends mssql-server-fts=17.0.0 mssql-server-polybase=17.0.0
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
@@ -323,7 +336,7 @@ USER mssql
     MissingPackage = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 RUN apt-get install -y --no-install-recommends mssql-server-fts
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
@@ -331,7 +344,7 @@ USER mssql
     ReversedPackages = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 RUN apt-get install -y --no-install-recommends mssql-server-polybase mssql-server-fts
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
@@ -339,7 +352,7 @@ USER mssql
     TrailingRootUser = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
@@ -347,7 +360,7 @@ USER root
 '@
     CurlBeforeRootUser = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 USER root
 RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
 RUN rm -rf /var/lib/apt/lists/*
@@ -357,7 +370,7 @@ USER mssql
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
 RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
 '@
@@ -365,7 +378,7 @@ USER mssql
 FROM ubuntu:24.04
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
@@ -373,7 +386,7 @@ USER mssql
     LaterFromStage = @'
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list
 RUN apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase
 RUN rm -rf /var/lib/apt/lists/*
 USER mssql
@@ -383,7 +396,7 @@ FROM ubuntu:24.04
 FROM mcr.microsoft.com/mssql/server:2025-latest
 USER root
 RUN curl -fsSL https://untrusted.example/install.sh | sh
-RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
+RUN wget -qO /etc/apt/sources.list.d/mssql-server-2025.list https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list && apt-get update && apt-get install -y --no-install-recommends mssql-server-fts mssql-server-polybase && rm -rf /var/lib/apt/lists/*
 USER mssql
 CMD ["/opt/mssql/bin/sqlservr"]
 '@
@@ -399,7 +412,7 @@ foreach ($name in $dockerFixtures.Keys) {
     }
 }
 if ($null -ne $dockerfile -and -not (Test-CanonicalSql2025DockerRecipe -DockerfileText $dockerfile)) {
-    Add-Failure 'DEMO/docker/Dockerfile must use the canonical SQL Server 2025 Docker recipe: exact base image, root-to-mssql user transition, official curl list download, unversioned ordered feature packages, and apt-list cleanup.'
+    Add-Failure 'DEMO/docker/Dockerfile must use the canonical SQL Server 2025 Docker recipe: exact base image, root-to-mssql user transition, official wget list download, unversioned ordered feature packages, and apt-list cleanup.'
 }
 
 if ($failures.Count -gt 0) {
