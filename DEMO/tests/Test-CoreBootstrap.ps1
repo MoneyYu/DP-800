@@ -95,7 +95,15 @@ foreach ($table in $coreTables) {
 Assert-Present -Text $initText -Pattern '(?i)FK_Products_Categories\s+REFERENCES\s+catalog\.Categories' -Message 'catalog.Products must reference catalog.Categories.'
 Assert-Present -Text $initText -Pattern '(?i)FK_OrderItems_Orders\s+REFERENCES\s+sales\.Orders' -Message 'sales.OrderItems must reference sales.Orders.'
 Assert-Present -Text $initText -Pattern '(?i)FK_Orders_Customers\s+REFERENCES\s+customer\.Customers' -Message 'sales.Orders must reference customer.Customers.'
-Assert-Present -Text $initText -Pattern '(?i)ISJSON\(ProductMetadata\)' -Message 'catalog.Products must validate JSON metadata.'
+Assert-Present -Text $initText -Pattern '(?i)ProductMetadata\s+json\s+NULL' -Message 'catalog.Products must use the native json type for ProductMetadata.'
+Assert-Present -Text $initText -Pattern '(?i)Preferences\s+json\s+NULL' -Message 'customer.Customers must use the native json type for Preferences.'
+Assert-Present -Text $initText -Pattern '(?i)ShippingMetadata\s+json\s+NULL' -Message 'sales.Orders must use the native json type for ShippingMetadata.'
+Assert-Absent -Text $initText -Pattern '(?i)ISJSON\s*\(' -Message 'Native json columns must not retain redundant ISJSON check expressions.'
+Assert-Present -Text $initText -Pattern '(?i)(compatibility_level|@compatibilityLevel)\s*<\s*170' -Message '01-initialize must fail clearly below compatibility level 170.'
+Assert-Present -Text $initText -Pattern '(?i)ALTER\s+TABLE\s+catalog\.Products\s+ALTER\s+COLUMN\s+ProductMetadata\s+json' -Message '01-initialize must upgrade legacy ProductMetadata to native json.'
+Assert-Present -Text $initText -Pattern '(?i)ALTER\s+TABLE\s+customer\.Customers\s+ALTER\s+COLUMN\s+Preferences\s+json' -Message '01-initialize must upgrade legacy Preferences to native json.'
+Assert-Present -Text $initText -Pattern '(?i)ALTER\s+TABLE\s+sales\.Orders\s+ALTER\s+COLUMN\s+ShippingMetadata\s+json' -Message '01-initialize must upgrade legacy ShippingMetadata to native json.'
+Assert-Present -Text $initText -Pattern '(?i)SchemaVersion.*2\.0\.0-json170' -Message '01-initialize must record the native-json schema version.'
 Assert-Present -Text $initText -Pattern '(?i)CK_ProductReviews_Rating\s+CHECK\s*\(Rating\s+BETWEEN\s+1\s+AND\s+5\)' -Message 'customer.ProductReviews must constrain Rating 1-5.'
 
 # Module state seed covers all eleven modules.

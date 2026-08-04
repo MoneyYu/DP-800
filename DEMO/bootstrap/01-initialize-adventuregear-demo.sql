@@ -26,6 +26,11 @@ GO
 USE [AdventureGearAI];
 GO
 
+DECLARE @compatibilityLevel int = (SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID());
+IF @compatibilityLevel < 170
+    THROW 51000, N'AdventureGearAI requires database compatibility level 170 or higher to use the native json data type.', 1;
+GO
+
 /* ---------------------------------------------------------------------------
    Domain schemas (CREATE SCHEMA must be the first statement in its batch, so
    each guarded creation is executed via EXEC for idempotency).
@@ -131,8 +136,7 @@ BEGIN
             CONSTRAINT UQ_Products_Sku UNIQUE,
         UnitPrice decimal(10,2) NOT NULL
             CONSTRAINT CK_Products_UnitPrice CHECK (UnitPrice > 0),
-        ProductMetadata nvarchar(max) NULL
-            CONSTRAINT CK_Products_Metadata CHECK (ProductMetadata IS NULL OR ISJSON(ProductMetadata) = 1),
+        ProductMetadata json NULL,
         IsActive bit NOT NULL
             CONSTRAINT DF_Products_IsActive DEFAULT 1,
         CreatedAtUtc datetime2(3) NOT NULL
@@ -172,8 +176,7 @@ BEGIN
         SalesRegion nvarchar(20) NOT NULL
             CONSTRAINT CK_Customers_SalesRegion
                 CHECK (SalesRegion IN (N'West', N'East', N'Central', N'North', N'South')),
-        Preferences nvarchar(max) NULL
-            CONSTRAINT CK_Customers_Preferences CHECK (Preferences IS NULL OR ISJSON(Preferences) = 1),
+        Preferences json NULL,
         CreatedAtUtc datetime2(3) NOT NULL
             CONSTRAINT DF_Customers_CreatedAtUtc DEFAULT SYSUTCDATETIME()
     );
@@ -213,9 +216,85 @@ BEGIN
         OrderStatus nvarchar(20) NOT NULL
             CONSTRAINT CK_Orders_OrderStatus
                 CHECK (OrderStatus IN (N'Pending', N'Processing', N'Shipped', N'Delivered', N'Cancelled')),
-        ShippingMetadata nvarchar(max) NULL
-            CONSTRAINT CK_Orders_ShippingMetadata CHECK (ShippingMetadata IS NULL OR ISJSON(ShippingMetadata) = 1)
+        ShippingMetadata json NULL
     );
+END;
+GO
+
+/* Upgrade the three former nvarchar JSON documents in-place.  The nullability
+   is read from the existing column so upgrades do not weaken that contract. */
+IF EXISTS
+(
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'catalog.Products')
+      AND name = N'ProductMetadata'
+      AND system_type_id <> TYPE_ID(N'json')
+)
+BEGIN
+    IF EXISTS
+    (
+        SELECT 1
+        FROM sys.check_constraints
+        WHERE parent_object_id = OBJECT_ID(N'catalog.Products')
+          AND name = N'CK_Products_Metadata'
+    )
+        ALTER TABLE catalog.Products DROP CONSTRAINT CK_Products_Metadata;
+
+    DECLARE @productMetadataNullability nvarchar(8) =
+        CASE WHEN COLUMNPROPERTY(OBJECT_ID(N'catalog.Products'), N'ProductMetadata', 'AllowsNull') = 1
+             THEN N'NULL' ELSE N'NOT NULL' END;
+    EXEC (N'ALTER TABLE catalog.Products ALTER COLUMN ProductMetadata json ' + @productMetadataNullability + N';');
+END;
+GO
+
+IF EXISTS
+(
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'customer.Customers')
+      AND name = N'Preferences'
+      AND system_type_id <> TYPE_ID(N'json')
+)
+BEGIN
+    IF EXISTS
+    (
+        SELECT 1
+        FROM sys.check_constraints
+        WHERE parent_object_id = OBJECT_ID(N'customer.Customers')
+          AND name = N'CK_Customers_Preferences'
+    )
+        ALTER TABLE customer.Customers DROP CONSTRAINT CK_Customers_Preferences;
+
+    DECLARE @preferencesNullability nvarchar(8) =
+        CASE WHEN COLUMNPROPERTY(OBJECT_ID(N'customer.Customers'), N'Preferences', 'AllowsNull') = 1
+             THEN N'NULL' ELSE N'NOT NULL' END;
+    EXEC (N'ALTER TABLE customer.Customers ALTER COLUMN Preferences json ' + @preferencesNullability + N';');
+END;
+GO
+
+IF EXISTS
+(
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'sales.Orders')
+      AND name = N'ShippingMetadata'
+      AND system_type_id <> TYPE_ID(N'json')
+)
+BEGIN
+    IF EXISTS
+    (
+        SELECT 1
+        FROM sys.check_constraints
+        WHERE parent_object_id = OBJECT_ID(N'sales.Orders')
+          AND name = N'CK_Orders_ShippingMetadata'
+    )
+        ALTER TABLE sales.Orders DROP CONSTRAINT CK_Orders_ShippingMetadata;
+
+    DECLARE @shippingMetadataNullability nvarchar(8) =
+        CASE WHEN COLUMNPROPERTY(OBJECT_ID(N'sales.Orders'), N'ShippingMetadata', 'AllowsNull') = 1
+             THEN N'NULL' ELSE N'NOT NULL' END;
+    EXEC (N'ALTER TABLE sales.Orders ALTER COLUMN ShippingMetadata json ' + @shippingMetadataNullability + N';');
 END;
 GO
 
@@ -246,8 +325,15 @@ GO
 IF NOT EXISTS (SELECT 1 FROM ops.DemoEnvironment)
 BEGIN
     INSERT ops.DemoEnvironment (DemoEnvironmentID, DatabaseName, DemoName, SchemaVersion)
-    VALUES (1, N'AdventureGearAI', N'AdventureGearAI unified demo', N'1.0.0');
+    VALUES (1, N'AdventureGearAI', N'AdventureGearAI unified demo', N'2.0.0-json170');
 END;
+GO
+
+UPDATE ops.DemoEnvironment
+SET SchemaVersion = N'2.0.0-json170',
+    UpdatedAtUtc = SYSUTCDATETIME()
+WHERE DemoEnvironmentID = 1
+  AND SchemaVersion <> N'2.0.0-json170';
 GO
 
 INSERT ops.DemoModuleState (ModuleNumber)
@@ -378,6 +464,219 @@ BEGIN
         (11, 3, N'Accurate navigation', N'Clear topographic maps and long battery life on all-day rides.', 5),
         (12, 3, N'Compact and dependable', N'Simple routing with excellent battery endurance.', 4);
 END;
+GO
+
+/* Expand the canonical core deterministically.  Stable explicit identifiers
+   preserve the original examples while the set-based ranges make every rerun
+   converge on the same teaching dataset. */
+SET IDENTITY_INSERT catalog.Categories ON;
+INSERT catalog.Categories (CategoryID, CategoryName, Description)
+SELECT v.CategoryID, v.CategoryName, v.Description
+FROM (VALUES
+    (6, N'Maintenance', N'Tools, cleaners, and workshop essentials'),
+    (7, N'Safety', N'Helmets, protection, and visibility equipment'),
+    (8, N'Training', N'Indoor training and performance accessories'),
+    (9, N'Nutrition', N'Ride nutrition and hydration supplies'),
+    (10, N'Travel', N'Bags, racks, and transport equipment')
+) AS v(CategoryID, CategoryName, Description)
+WHERE NOT EXISTS (SELECT 1 FROM catalog.Categories AS c WHERE c.CategoryID = v.CategoryID);
+SET IDENTITY_INSERT catalog.Categories OFF;
+GO
+
+SET IDENTITY_INSERT catalog.Products ON;
+;WITH e1(n) AS
+(
+    SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) AS d(n)
+),
+numbers(n) AS
+(
+    SELECT TOP (138) ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+    FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
+)
+INSERT catalog.Products (ProductID, CategoryID, ProductName, Sku, UnitPrice, ProductMetadata)
+SELECT
+    12 + n,
+    ((11 + n) % 10) + 1,
+    CONCAT(N'AdventureGear Series ', RIGHT(CONCAT(N'000', 12 + n), 3)),
+    CONCAT(N'AG-', RIGHT(CONCAT(N'000', 12 + n), 3)),
+    CONVERT(decimal(10, 2), 24.99 + (n * 7.25)),
+    CONCAT(
+        N'{"terrain":"mixed-surface","frame":"alloy","product":{"id":', 12 + n,
+        N',"family":"AdventureGear Series","model":"AG-', RIGHT(CONCAT(N'000', 12 + n), 3),
+        N'"},"specifications":{"weightKg":', CONVERT(nvarchar(20), CONVERT(decimal(5, 2), 6.5 + ((n % 20) * 0.15))),
+        N',"dimensions":{"lengthCm":', 25 + (n % 60), N',"widthCm":', 8 + (n % 20),
+        N'}},"features":["weather-ready","serviceable","demo-seed"],"tags":["category-',
+        ((11 + n) % 10) + 1, N'","deterministic"],"warranty":{"years":2,"transferable":false}}'
+    )
+FROM numbers
+WHERE NOT EXISTS (SELECT 1 FROM catalog.Products AS p WHERE p.ProductID = 12 + numbers.n);
+SET IDENTITY_INSERT catalog.Products OFF;
+GO
+
+UPDATE catalog.Products
+SET ProductMetadata = CONCAT(
+    N'{"terrain":"',
+    CASE ProductID WHEN 1 THEN N'rocky trails' WHEN 2 THEN N'alpine' WHEN 3 THEN N'gravel' ELSE N'mixed-surface' END,
+    N'","frame":"',
+    CASE ProductID WHEN 1 THEN N'aluminum' WHEN 2 THEN N'carbon' WHEN 3 THEN N'steel' ELSE N'alloy' END,
+    N'","product":{"id":', ProductID, N',"name":"', REPLACE(ProductName, N'"', N'\"'),
+    N'","sku":"', Sku, N'"},"specifications":{"wheelSize":',
+    CASE WHEN ProductID IN (1, 2) THEN 29 WHEN ProductID = 3 THEN 28 ELSE 27 END,
+    N',"price":', CONVERT(nvarchar(20), UnitPrice),
+    N',"dimensions":{"lengthCm":', 80 + (ProductID % 30), N',"widthCm":', 20 + (ProductID % 10),
+    N'}},"features":["weather-ready","serviceable","demo-seed"],"compatibility":{"terrainTags":["trail","all-weather"],"serviceIntervalsDays":[90,180]},"warranty":{"years":2,"transferable":false}}'
+);
+GO
+
+;WITH e1(n) AS
+(
+    SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) AS d(n)
+),
+numbers(n) AS
+(
+    SELECT TOP (138) ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+    FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
+)
+INSERT catalog.Inventory (ProductID, QuantityOnHand, ReorderThreshold, WarehouseLocation)
+SELECT 12 + n, 30 + ((n * 17) % 220), 8 + (n % 30),
+       CASE n % 3 WHEN 0 THEN N'WH-West' WHEN 1 THEN N'WH-East' ELSE N'WH-Central' END
+FROM numbers
+WHERE NOT EXISTS (SELECT 1 FROM catalog.Inventory AS i WHERE i.ProductID = 12 + numbers.n);
+GO
+
+SET IDENTITY_INSERT customer.Customers ON;
+;WITH e1(n) AS
+(
+    SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) AS d(n)
+),
+numbers(n) AS
+(
+    SELECT TOP (114) ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+    FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
+)
+INSERT customer.Customers (CustomerID, CustomerName, Email, SalesRegion, Preferences)
+SELECT
+    6 + n,
+    CONCAT(N'Demo Customer ', RIGHT(CONCAT(N'000', 6 + n), 3)),
+    CONCAT(N'customer', RIGHT(CONCAT(N'000', 6 + n), 3), N'@example.invalid'),
+    CASE (6 + n - 1) % 5
+        WHEN 0 THEN N'West' WHEN 1 THEN N'East' WHEN 2 THEN N'Central' WHEN 3 THEN N'North' ELSE N'South'
+    END,
+    N'{"newsletter":true,"preferredCategory":"Bikes","profile":{"experience":"intermediate"},"notifications":{"channels":["email"]},"savedSearches":["trail"]}'
+FROM numbers
+WHERE NOT EXISTS (SELECT 1 FROM customer.Customers AS c WHERE c.CustomerID = 6 + numbers.n);
+SET IDENTITY_INSERT customer.Customers OFF;
+GO
+
+UPDATE customer.Customers
+SET Preferences = CONCAT(
+    N'{"newsletter":', CASE WHEN CustomerID % 2 = 0 THEN N'false' ELSE N'true' END,
+    N',"preferredCategory":"', CASE ((CustomerID - 1) % 10)
+        WHEN 0 THEN N'Bikes' WHEN 1 THEN N'Components' WHEN 2 THEN N'Accessories' WHEN 3 THEN N'Clothing'
+        WHEN 4 THEN N'Navigation' WHEN 5 THEN N'Maintenance' WHEN 6 THEN N'Safety' WHEN 7 THEN N'Training'
+        WHEN 8 THEN N'Nutrition' ELSE N'Travel' END,
+    N'","profile":{"experience":"', CASE CustomerID % 3 WHEN 0 THEN N'advanced' WHEN 1 THEN N'beginner' ELSE N'intermediate' END,
+    N'","homeRegion":"', SalesRegion, N'"},"notifications":{"channels":["email","sms"],"quietHours":{"start":"21:00","end":"07:00"}},"savedSearches":["trail gear","seasonal offers"],"favoriteRideTypes":["trail","gravel"]}'
+);
+GO
+
+SET IDENTITY_INSERT sales.Orders ON;
+;WITH e1(n) AS
+(
+    SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) AS d(n)
+),
+numbers(n) AS
+(
+    SELECT TOP (794) ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+    FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
+)
+INSERT sales.Orders (OrderID, CustomerID, OrderDate, OrderStatus, ShippingMetadata)
+SELECT
+    6 + n,
+    ((6 + n - 1) % 120) + 1,
+    DATEADD(day, -((6 + n) % 365), CONVERT(datetime2(0), N'2026-01-01T12:00:00')),
+    CASE (6 + n) % 5
+        WHEN 0 THEN N'Pending' WHEN 1 THEN N'Processing' WHEN 2 THEN N'Shipped' WHEN 3 THEN N'Delivered' ELSE N'Cancelled'
+    END,
+    N'{"carrier":"TrailExpress","priority":"standard","destination":{"country":"US"},"parcels":[{"sequence":1}]}'
+FROM numbers
+WHERE NOT EXISTS (SELECT 1 FROM sales.Orders AS o WHERE o.OrderID = 6 + numbers.n);
+SET IDENTITY_INSERT sales.Orders OFF;
+GO
+
+UPDATE sales.Orders
+SET ShippingMetadata = CONCAT(
+    N'{"carrier":"', CASE WHEN OrderID % 2 = 0 THEN N'TrailExpress' ELSE N'RidgeLogistics' END,
+    N'","priority":"', CASE WHEN OrderID % 4 = 0 THEN N'express' ELSE N'standard' END,
+    N'","tracking":{"number":"AG', RIGHT(CONCAT(N'000000', OrderID), 6),
+    N'","events":[{"status":"label-created","at":"2025-12-01T08:00:00Z"},{"status":"',
+    CASE WHEN OrderStatus IN (N'Delivered', N'Shipped') THEN N'in-transit' ELSE N'pending' END,
+    N'","at":"2025-12-02T08:00:00Z"}]},"destination":{"region":"',
+    CASE (CustomerID - 1) % 5 WHEN 0 THEN N'West' WHEN 1 THEN N'East' WHEN 2 THEN N'Central' WHEN 3 THEN N'North' ELSE N'South' END,
+    N'","deliveryInstructions":["leave at secure location","send delivery notification"]},"parcels":[{"sequence":1,"weightKg":',
+    CONVERT(nvarchar(20), CONVERT(decimal(4, 1), 1.0 + ((OrderID % 20) * 0.2))),
+    N',"dimensionsCm":{"length":30,"width":20,"height":12}}]}'
+);
+GO
+
+INSERT sales.OrderItems (OrderID, ProductID, Quantity, UnitPrice)
+SELECT v.OrderID, v.ProductID, v.Quantity, p.UnitPrice
+FROM (VALUES (1, 10, 1), (2, 6, 1), (3, 1, 1), (4, 8, 1), (5, 7, 1)) AS v(OrderID, ProductID, Quantity)
+JOIN catalog.Products AS p ON p.ProductID = v.ProductID
+WHERE NOT EXISTS
+(
+    SELECT 1 FROM sales.OrderItems AS oi WHERE oi.OrderID = v.OrderID AND oi.ProductID = v.ProductID
+);
+GO
+
+;WITH e1(n) AS
+(
+    SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) AS d(n)
+),
+numbers(n) AS
+(
+    SELECT TOP (794) ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+    FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
+),
+items AS
+(
+    SELECT 6 + n AS OrderID, line.LineNumber,
+           (((6 + n) * 17 + line.LineNumber * 37 - 1) % 150) + 1 AS ProductID
+    FROM numbers
+    CROSS JOIN (VALUES (1),(2),(3)) AS line(LineNumber)
+)
+INSERT sales.OrderItems (OrderID, ProductID, Quantity, UnitPrice)
+SELECT items.OrderID, items.ProductID, 1 + (items.LineNumber % 2), p.UnitPrice
+FROM items
+JOIN catalog.Products AS p ON p.ProductID = items.ProductID
+WHERE NOT EXISTS
+(
+    SELECT 1 FROM sales.OrderItems AS oi WHERE oi.OrderID = items.OrderID AND oi.ProductID = items.ProductID
+);
+GO
+
+SET IDENTITY_INSERT customer.ProductReviews ON;
+;WITH e1(n) AS
+(
+    SELECT n FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) AS d(n)
+),
+numbers(n) AS
+(
+    SELECT TOP (486) ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+    FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
+)
+INSERT customer.ProductReviews (ReviewID, ProductID, CustomerID, ReviewTitle, ReviewText, Rating, CreatedAtUtc)
+SELECT
+    14 + n,
+    ((14 + n - 1) % 150) + 1,
+    ((14 + n - 1) % 120) + 1,
+    CONCAT(N'Deterministic field review ', RIGHT(CONCAT(N'000', 14 + n), 3)),
+    CONCAT(N'Review ', 14 + n, N' documents repeatable AdventureGear evaluation data for JSON, relational, and analytics demonstrations.'),
+    ((14 + n - 1) % 5) + 1,
+    DATEADD(day, -(14 + n), CONVERT(datetime2(3), N'2026-01-01T00:00:00'))
+FROM numbers
+WHERE NOT EXISTS (SELECT 1 FROM customer.ProductReviews AS r WHERE r.ReviewID = 14 + numbers.n);
+SET IDENTITY_INSERT customer.ProductReviews OFF;
 GO
 
 /* Refresh the environment marker timestamp so re-runs record the latest init.
