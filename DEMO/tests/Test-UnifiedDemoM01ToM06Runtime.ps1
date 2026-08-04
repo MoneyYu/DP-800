@@ -88,6 +88,17 @@ $originalPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Pro
 $originalDpPassword = [Environment]::GetEnvironmentVariable('DP800_SQL_PASSWORD', 'Process')
 $modules = @(1, 2, 3, 4, 5, 6)
 $stateSnapshot = @{}
+$expectedCoreCounts = [ordered]@{
+    'catalog.Categories'      = 10
+    'catalog.Products'        = 150
+    'catalog.Inventory'       = 150
+    'customer.Customers'      = 120
+    'customer.ProductReviews' = 500
+    'sales.Orders'            = 800
+    'sales.OrderItems'        = 2400
+    'ops.DemoModuleState'     = 11
+    'ops.DemoEnvironment'     = 1
+}
 
 try {
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $password, 'Process')
@@ -97,6 +108,20 @@ try {
     $before = Get-DatabaseSet
     & pwsh -NoProfile -File $bootstrapScript -Server $Server -User $User | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Core bootstrap failed during test setup.' }
+    foreach ($table in $expectedCoreCounts.Keys) {
+        Assert-Count "canonical core $table" (Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM $table;") $expectedCoreCounts[$table]
+    }
+    $canonicalRows = Get-Scalar -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 1), N'|',
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 4), N'|',
+    (SELECT CustomerName FROM customer.Customers WHERE CustomerID = 3)
+);
+"@
+    if ($canonicalRows -ne 'Trailblazer 29 Bike|Puncture Guard Tire|Jordan Patel') {
+        Add-Failure "Canonical seed rows changed: '$canonicalRows'."
+    }
 
     foreach ($module in $modules) {
         $stateSnapshot[$module] = Get-Scalar -Database 'AdventureGearAI' -Query @"
@@ -127,12 +152,12 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
     }
 
     # --- Expected objects / row counts ---------------------------------------
-    Assert-Count 'catalog.ProductPrice count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductPrice;') 12
+    Assert-Count 'catalog.ProductPrice count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductPrice;') 150
     if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductPriceHistory;') -lt 1) { Add-Failure 'catalog.ProductPriceHistory should contain at least one historical row.' }
     if ((Get-Int "SET NOCOUNT ON; SELECT CASE WHEN COL_LENGTH('catalog.Products','MetadataFrame') IS NOT NULL THEN 1 ELSE 0 END;") -ne 1) { Add-Failure 'catalog.Products.MetadataFrame computed column is missing.' }
     Assert-Count 'IX_Products_MetadataFrame' (Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID('catalog.Products') AND name='IX_Products_MetadataFrame';") 1
     Assert-Count 'sales.PartitionedOrders count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM sales.PartitionedOrders;') 5
-    Assert-Count 'catalog.ProductNode count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductNode;') 12
+    Assert-Count 'catalog.ProductNode count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductNode;') 150
     Assert-Count 'catalog.ProductRelatedTo count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductRelatedTo;') 3
 
     foreach ($obj in 'sales.vw_CustomerOrderSummary', 'sales.fn_OrderTotal', 'sales.fn_CustomerOrders', 'sales.usp_AddOrderItem', 'sales.trg_OrderStatusAudit', 'sales.OrderStatusAudit') {
@@ -145,7 +170,7 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
     Assert-Count 'ops.EmployeeNode count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.EmployeeNode;') 5
     Assert-Count 'ops.ReportsTo count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.ReportsTo;') 4
 
-    Assert-Count 'security.SecureCustomers count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 6
+    Assert-Count 'security.SecureCustomers count' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 120
     Assert-Count 'security.CustomerRegionPolicy' (Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.security_policies WHERE name='CustomerRegionPolicy';") 1
     Assert-Count 'AdventureGearMaskedReader user' (Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.database_principals WHERE name='AdventureGearMaskedReader';") 1
     Assert-Count 'AdventureGearWestReader user' (Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.database_principals WHERE name='AdventureGearWestReader';") 1
@@ -167,7 +192,7 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
         if ((Get-ModuleStatus -Module $module) -ne 'Completed') { Add-Failure "After -Force, M$('{0:d2}' -f $module) is not Completed." }
     }
     Assert-Count 'ops.PerformanceOrders after -Force (idempotent)' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.PerformanceOrders;') 10000
-    Assert-Count 'security.SecureCustomers after -Force (idempotent)' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 6
+    Assert-Count 'security.SecureCustomers after -Force (idempotent)' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 120
     Assert-Count 'sales.PartitionedOrders after -Force (idempotent)' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM sales.PartitionedOrders;') 5
 
     # --- Scenario D: each module runs independently from the core -------------
@@ -180,7 +205,7 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
         if ((Get-ModuleStatus -Module $module) -ne 'Completed') { Add-Failure "Independent run of M$('{0:d2}' -f $module) did not Complete." }
         if ((Get-ModuleStatus -Module 1) -ne 'Completed') { Add-Failure "Independent run of M$('{0:d2}' -f $module) must keep the M01 prerequisite Completed." }
     }
-    Assert-Count 'security.SecureCustomers after independent M05' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 6
+    Assert-Count 'security.SecureCustomers after independent M05' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 120
     Assert-Count 'ops.PerformanceOrders after independent M06' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.PerformanceOrders;') 10000
 
     # --- Canonical data must be unchanged (exercises roll back) --------------

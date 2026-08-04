@@ -96,10 +96,31 @@ $moduleSignature = @{
 
 function Assert-CoreIntact {
     param([string]$Context)
-    $checks = @{ 'catalog.Categories' = 5; 'catalog.Products' = 12; 'catalog.Inventory' = 12; 'customer.Customers' = 6; 'customer.ProductReviews' = 14; 'sales.Orders' = 6; 'sales.OrderItems' = 13 }
+    $checks = [ordered]@{
+        'catalog.Categories'      = 10
+        'catalog.Products'        = 150
+        'catalog.Inventory'       = 150
+        'customer.Customers'      = 120
+        'customer.ProductReviews' = 500
+        'sales.Orders'            = 800
+        'sales.OrderItems'        = 2400
+        'ops.DemoModuleState'     = 11
+        'ops.DemoEnvironment'     = 1
+    }
     foreach ($t in $checks.Keys) {
         $c = Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM $t;"
         if ($c -ne $checks[$t]) { Add-Failure "[$Context] canonical core $t count is $c (expected $($checks[$t]))." }
+    }
+    $canonicalRows = Get-Scalar -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 1), N'|',
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 4), N'|',
+    (SELECT CustomerName FROM customer.Customers WHERE CustomerID = 3)
+);
+"@
+    if ($canonicalRows -ne 'Trailblazer 29 Bike|Puncture Guard Tire|Jordan Patel') {
+        Add-Failure "[$Context] canonical seed rows changed: '$canonicalRows'."
     }
     if ((Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM ops.DemoEnvironment WHERE DemoEnvironmentID=1 AND DatabaseName=N'AdventureGearAI';") -ne 1) {
         Add-Failure "[$Context] ops.DemoEnvironment marker row is missing."
@@ -174,7 +195,7 @@ try {
     Assert-Status -Module 1 -Expected 'NotStarted'
     # Dependent objects are only marked stale, not physically dropped by M01 reset.
     if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.PerformanceOrders;') -ne 10000) { Add-Failure 'M01 reset must not drop the M06 workload (only mark it stale).' }
-    if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') -ne 6) { Add-Failure 'M01 reset must not drop the M05 companion table (only mark it stale).' }
+    if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') -ne 120) { Add-Failure 'M01 reset must not drop the 120-row M05 companion table (only mark it stale).' }
     Assert-CoreIntact -Context 'after M01 reset'
     # Reapply M01 and representative dependents.
     $reapply1 = Invoke-Runner -Modules @(1)

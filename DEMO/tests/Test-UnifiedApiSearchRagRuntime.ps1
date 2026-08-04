@@ -54,6 +54,37 @@ function Get-ModuleStatus {
     param([int]$Module)
     return Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT Status FROM ops.DemoModuleState WHERE ModuleNumber=$Module;"
 }
+function Assert-CanonicalCore {
+    param([string]$Context)
+    $expectedCounts = [ordered]@{
+        'catalog.Categories'      = 10
+        'catalog.Products'        = 150
+        'catalog.Inventory'       = 150
+        'customer.Customers'      = 120
+        'customer.ProductReviews' = 500
+        'sales.Orders'            = 800
+        'sales.OrderItems'        = 2400
+        'ops.DemoModuleState'     = 11
+        'ops.DemoEnvironment'     = 1
+    }
+    foreach ($table in $expectedCounts.Keys) {
+        $actual = [int](Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT COUNT(*) FROM $table;")
+        if ($actual -ne $expectedCounts[$table]) {
+            Add-Failure "[$Context] canonical core $table count is $actual (expected $($expectedCounts[$table]))."
+        }
+    }
+    $canonicalRows = Get-Scalar -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 1), N'|',
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 4), N'|',
+    (SELECT CustomerName FROM customer.Customers WHERE CustomerID = 3)
+);
+"@
+    if ($canonicalRows -ne 'Trailblazer 29 Bike|Puncture Guard Tire|Jordan Patel') {
+        Add-Failure "[$Context] canonical seed rows changed: '$canonicalRows'."
+    }
+}
 
 Write-Host 'Unified API/search/RAG (M07-M11) runtime integration test'
 Write-Host ''
@@ -73,6 +104,7 @@ try {
     $before = Get-DatabaseSet
     & pwsh -NoProfile -File $bootstrapScript -Server $Server -User $User | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Core bootstrap failed during test setup.' }
+    Assert-CanonicalCore -Context 'after bootstrap'
 
     # Snapshot the tested module rows so we can restore them exactly afterward.
     foreach ($module in $testedModules) {
@@ -125,15 +157,17 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
 
     # --- M08: api.* views exist and project catalog data (no duplicate tables) -
     $apiProductsRows = [int](Get-Scalar -Database 'AdventureGearAI' -Query 'SET NOCOUNT ON; SELECT COUNT(*) FROM api.Products;')
-    if ($apiProductsRows -lt 1) { Add-Failure "api.Products view returned no rows ($apiProductsRows)." }
+    if ($apiProductsRows -ne 150) { Add-Failure "api.Products view returned $apiProductsRows rows (expected 150)." }
     $catalogMatch = [int](Get-Scalar -Database 'AdventureGearAI' -Query 'SET NOCOUNT ON; SELECT COUNT(*) FROM api.Products v WHERE NOT EXISTS (SELECT 1 FROM catalog.Products p WHERE p.ProductID = v.ProductID);')
     if ($catalogMatch -ne 0) { Add-Failure "api.Products must project only canonical catalog.Products rows ($catalogMatch orphan rows)." }
     $dupTables = [int](Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.tables WHERE name IN (N'ApiProducts', N'ApiCategories');")
     if ($dupTables -ne 0) { Add-Failure "Duplicate Api* tables must not exist after migration ($dupTables found)." }
 
-    # --- M10: >= 100 search documents with non-null vectors -------------------
+    # --- M09/M10: review documents and review/variant search corpus -----------
+    $embeddingRows = [int](Get-Scalar -Database 'AdventureGearAI' -Query 'SET NOCOUNT ON; SELECT COUNT(*) FROM ai.EmbeddingDocuments;')
+    if ($embeddingRows -ne 500) { Add-Failure "ai.EmbeddingDocuments has $embeddingRows rows (expected 500)." }
     $searchRows = [int](Get-Scalar -Database 'AdventureGearAI' -Query 'SET NOCOUNT ON; SELECT COUNT(*) FROM search.SearchDocuments;')
-    if ($searchRows -lt 100) { Add-Failure "search.SearchDocuments must have >= 100 rows; found $searchRows." }
+    if ($searchRows -ne 5000) { Add-Failure "search.SearchDocuments must have 5000 rows; found $searchRows." }
     $nullVectors = [int](Get-Scalar -Database 'AdventureGearAI' -Query 'SET NOCOUNT ON; SELECT COUNT(*) FROM search.SearchDocuments WHERE SearchVector IS NULL;')
     if ($nullVectors -ne 0) { Add-Failure "search.SearchDocuments must have non-null vectors; found $nullVectors null vectors." }
     $searchOrphans = [int](Get-Scalar -Database 'AdventureGearAI' -Query 'SET NOCOUNT ON; SELECT COUNT(*) FROM search.SearchDocuments d WHERE NOT EXISTS (SELECT 1 FROM catalog.Products p WHERE p.ProductID = d.ProductID);')
@@ -166,9 +200,9 @@ FROM ops.DemoModuleState WHERE ModuleNumber=$module;
         $status = Get-ModuleStatus -Module $module
         if ($status -ne 'Completed') { Add-Failure "After -Force, M$('{0:d2}' -f $module) status is '$status' (expected Completed)." }
     }
-    # Idempotent re-seed keeps the corpus at >= 100 rows with non-null vectors.
+    # Idempotent re-seed preserves every review/variant search document.
     $searchRowsAfterForce = [int](Get-Scalar -Database 'AdventureGearAI' -Query 'SET NOCOUNT ON; SELECT COUNT(*) FROM search.SearchDocuments;')
-    if ($searchRowsAfterForce -lt 100) { Add-Failure "After -Force re-seed, search.SearchDocuments has $searchRowsAfterForce rows (expected >= 100)." }
+    if ($searchRowsAfterForce -ne 5000) { Add-Failure "After -Force re-seed, search.SearchDocuments has $searchRowsAfterForce rows (expected 5000)." }
 
     # --- Isolation: only AdventureGearAI may differ; no other DB touched ------
     $after = Get-DatabaseSet
