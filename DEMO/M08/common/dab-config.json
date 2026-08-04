@@ -13,17 +13,25 @@
   "entities": {
     "Category": {
       "source": {
-        "object": "api.Categories",
-        "type": "view",
+        "object": "catalog.Categories",
+        "type": "table",
         "key-fields": ["CategoryID"]
       },
       "cache": { "enabled": true, "ttl-seconds": 30 },
+      "relationships": {
+        "products": {
+          "cardinality": "many",
+          "target.entity": "Product",
+          "source.fields": ["CategoryID"],
+          "target.fields": ["CategoryID"]
+        }
+      },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
     },
     "Product": {
       "source": {
-        "object": "api.Products",
-        "type": "view",
+        "object": "catalog.Products",
+        "type": "table",
         "key-fields": ["ProductID"]
       },
       "mappings": {
@@ -33,6 +41,14 @@
         "UnitsInStock": "stockQuantity"
       },
       "cache": { "enabled": true, "ttl-seconds": 30 },
+      "relationships": {
+        "category": {
+          "cardinality": "one",
+          "target.entity": "Category",
+          "source.fields": ["CategoryID"],
+          "target.fields": ["CategoryID"]
+        }
+      },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
     },
     "ProductsByCategory": {

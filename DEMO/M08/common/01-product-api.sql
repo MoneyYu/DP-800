@@ -3,11 +3,12 @@
 
     Instead of creating duplicate ApiProducts/ApiCategories tables, this script
     projects the canonical AdventureGearAI domain data through read-only views in
-    the api schema. Data API Builder (common/dab-config.json) exposes these views
-    over REST and GraphQL. The api schema is created by the core bootstrap; this
-    script is idempotent and safe to re-run.
+    the api schema. The DAB Category/Product entities use the canonical catalog
+    tables so the CLI can validate their relationships; these api views remain
+    available to the SQL demos. The api schema is created by the core bootstrap;
+    this script is idempotent and safe to re-run.
     M08 共用設定：AdventureGearAI 的 REST/GraphQL API 介面。
-    此指令碼不會建立重複的 ApiProducts/ApiCategories 資料表，而是在 api 結構描述中的唯讀檢視表投影標準 AdventureGearAI 網域資料。Data API Builder（common/dab-config.json）會透過 REST 和 GraphQL 公開這些檢視表。api 結構描述由核心 bootstrap 建立；此指令碼具冪等性，且可安全地重新執行。
+    此指令碼不會建立重複的 ApiProducts/ApiCategories 資料表，而是在 api 結構描述中的唯讀檢視表投影標準 AdventureGearAI 網域資料。DAB Category/Product entity 會使用正規 catalog 資料表，讓 CLI 可驗證其 relationships；這些 api 檢視表仍供 SQL demo 使用。api 結構描述由核心 bootstrap 建立；此指令碼具冪等性，且可安全地重新執行。
     */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
