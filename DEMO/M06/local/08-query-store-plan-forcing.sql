@@ -10,10 +10,6 @@ SET NOCOUNT ON;
 SET XACT_ABORT ON;
 GO
 
-IF OBJECT_ID(N'ops.PerformanceOrders', N'U') IS NULL
-    THROW 51000, N'Run M06 common/01-workload.sql before the plan-forcing demo.', 1;
-GO
-
 DECLARE @appLockResult int;
 DECLARE @appLockHeld bit = 0;
 DECLARE @priorQueryCaptureMode nvarchar(60);
@@ -36,6 +32,12 @@ BEGIN TRY
         THROW 51007, N'M06 plan-forcing demo could not acquire the Query Store recovery lock.', 1;
 
     SET @appLockHeld = 1;
+
+    /* Validate the module workload only after acquiring the lifecycle lock.
+       M06 reset owns the same lock while it removes PerformanceOrders, so this
+       converts a concurrent teardown into the controlled precondition error. */
+    IF OBJECT_ID(N'ops.PerformanceOrders', N'U') IS NULL
+        THROW 51000, N'Run M06 common/01-workload.sql before the plan-forcing demo.', 1;
 
     /* The session lock serializes both first-use DDL and recovery-state changes,
        preventing concurrent demos from adding the same column. */

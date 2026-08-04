@@ -48,10 +48,13 @@ foreach ($script in @(
 }
 
 $planLock = Get-SourceIndex $planForcing 'sp_getapplock'
+$planWorkloadPrecondition = Get-SourceIndex $planForcing "IF OBJECT_ID(N'ops.PerformanceOrders', N'U') IS NULL"
+$planQueryStoreWork = Get-SourceIndex $planForcing "IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL"
 $planMigration = Get-SourceIndex $planForcing "IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState'"
 $planFinalRelease = Get-SourceIndex $planForcing 'sp_releaseapplock' -Last
 $planFinalCleanup = Get-SourceIndex $planForcing 'DELETE FROM ops.M06QueryStoreRuntimeState' -Last
 Assert-True ($planLock -ge 0 -and $planMigration -gt $planLock) 'M06 plan forcing must lock before recovery-state schema migration.'
+Assert-True ($planWorkloadPrecondition -gt $planLock -and $planWorkloadPrecondition -lt $planQueryStoreWork) 'M06 plan forcing must validate the workload only after acquiring the lifecycle lock and before Query Store work.'
 Assert-True ($planFinalRelease -gt $planFinalCleanup) 'M06 plan forcing must retain the lock through recovery-state cleanup.'
 Assert-True ($planForcing -match '(?is)SELECT\s+@currentQueryCaptureMode\s*=\s*query_capture_mode_desc.*?IF\s+@currentQueryCaptureMode\s*=\s*@expectedDemoQueryCaptureMode.*?ALTER\s+DATABASE\s+CURRENT\s+SET\s+QUERY_STORE') 'M06 plan forcing must reread the capture mode and restore only when it still matches the expected demo mode.'
 
@@ -108,6 +111,35 @@ function Start-SqlFile {
         $output = & $SqlcmdPath -S $TargetServer -U $TargetUser -d AdventureGearAI -i $SqlPath -h -1 -W -b -C -I -x 2>&1 | Out-String
         [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
     } -ArgumentList $sqlcmd.Source, $Server, $User, $Path, $password
+}
+
+function Start-SqlQuery {
+    param([string]$Query)
+    Start-Job -ScriptBlock {
+        param($SqlcmdPath, $TargetServer, $TargetUser, $SqlQuery, $SqlPassword)
+        $env:SQLCMDPASSWORD = $SqlPassword
+        $output = & $SqlcmdPath -S $TargetServer -U $TargetUser -d AdventureGearAI -Q $SqlQuery -h -1 -W -b -C -I -x 2>&1 | Out-String
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+    } -ArgumentList $sqlcmd.Source, $Server, $User, $Query, $password
+}
+
+function Wait-ForAppLockWait {
+    param([int]$ExpectedCount, [string]$Label)
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        $waitCount = [int](Invoke-Query @"
+SELECT COUNT(*)
+FROM sys.dm_exec_requests AS r
+CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+WHERE r.database_id = DB_ID(N'AdventureGearAI')
+  AND r.wait_type LIKE N'LCK_M%'
+  AND t.text = N'xp_userlock';
+"@ | Select-Object -First 1)
+        if ($waitCount -ge $ExpectedCount) { return }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+
+    throw "$Label did not reach $ExpectedCount queued application-lock request(s)."
 }
 
 function Assert-ConcurrentSqlFiles {
@@ -195,6 +227,79 @@ ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_
     $stateExists = Invoke-Query "SELECT CASE WHEN OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL THEN N'0' ELSE N'1' END;"
     Assert-True ($captureMode[0] -eq 'NONE') 'M06 reset must not overwrite a stale manually selected Query Store capture mode.'
     Assert-True ($stateExists[0] -eq '0') 'M06 reset must clear stale recovery metadata after preserving the manual mode.'
+
+    # Queue reset before the interactive plan-forcing demo behind a synchronized
+    # lifecycle-lock holder. Once released, reset must remove the workload first;
+    # the demo must then fail only with its intentional workload precondition.
+    $provision = & pwsh -NoProfile -File $runnerPath -Server $Server -User $User -Modules 6 -Force 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "M06 reprovisioning failed: $provision" }
+    Invoke-Query @"
+DROP TABLE IF EXISTS ops.M06QueryStoreRaceSync;
+CREATE TABLE ops.M06QueryStoreRaceSync
+(
+    Actor nvarchar(30) NOT NULL CONSTRAINT PK_M06QueryStoreRaceSync PRIMARY KEY
+);
+"@ | Out-Null
+
+    $blocker = Start-SqlQuery @"
+DECLARE @lockResult int;
+DECLARE @release bit = 0;
+EXEC @lockResult = sys.sp_getapplock
+    @Resource = N'DP800.M06.QueryStoreRecovery',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
+IF @lockResult < 0 THROW 51008, N'M06 regression blocker could not acquire the lifecycle lock.', 1;
+INSERT ops.M06QueryStoreRaceSync (Actor) VALUES (N'Blocker');
+WHILE @release = 0
+BEGIN
+    SET @release = CASE WHEN EXISTS (SELECT 1 FROM ops.M06QueryStoreRaceSync WHERE Actor = N'Release') THEN 1 ELSE 0 END;
+    IF @release = 0 WAITFOR DELAY '00:00:00.100';
+END;
+EXEC sys.sp_releaseapplock
+    @Resource = N'DP800.M06.QueryStoreRecovery',
+    @LockOwner = N'Session';
+"@
+    $resetJob = $null
+    $planJob = $null
+    try {
+        $blockerDeadline = (Get-Date).AddSeconds(30)
+        do {
+            $blockerReady = Invoke-Query "SELECT COUNT(*) FROM ops.M06QueryStoreRaceSync WHERE Actor = N'Blocker';"
+            if ($blockerReady[0] -eq '1') { break }
+            Start-Sleep -Milliseconds 100
+        } while ((Get-Date) -lt $blockerDeadline)
+        if ($blockerReady[0] -ne '1') { throw 'M06 regression blocker did not signal that it holds the lifecycle lock.' }
+
+        $resetJob = Start-SqlFile -Path $resetPath
+        Wait-ForAppLockWait -ExpectedCount 1 -Label 'M06 reset'
+        $planJob = Start-SqlFile -Path $planForcingPath
+        Wait-ForAppLockWait -ExpectedCount 2 -Label 'M06 plan-forcing and reset race'
+
+        Invoke-Query "INSERT ops.M06QueryStoreRaceSync (Actor) VALUES (N'Release');" | Out-Null
+        $null = Wait-Job -Job $blocker, $resetJob, $planJob -Timeout 90
+        $blockerResult = Receive-Job -Job $blocker
+        $resetResult = Receive-Job -Job $resetJob
+        $planResult = Receive-Job -Job $planJob
+
+        Assert-True ($blocker.State -eq 'Completed' -and $blockerResult.ExitCode -eq 0) "M06 regression blocker did not complete: $($blockerResult.Output)"
+        Assert-True ($resetJob.State -eq 'Completed' -and $resetResult.ExitCode -eq 0) "M06 reset did not complete during the lifecycle race: $($resetResult.Output)"
+        Assert-True ($planJob.State -eq 'Completed' -and $planResult.ExitCode -ne 0) "M06 plan-forcing must exit after reset removes its workload: $($planResult.Output)"
+        Assert-True ($planResult.Output -match 'Run M06 common/01-workload\.sql before the plan-forcing demo') "M06 plan-forcing must report its controlled missing-workload error, not an object-race failure: $($planResult.Output)"
+
+        $workloadExists = Invoke-Query "SELECT CASE WHEN OBJECT_ID(N'ops.PerformanceOrders', N'U') IS NULL THEN N'0' ELSE N'1' END;"
+        $raceStateExists = Invoke-Query "SELECT CASE WHEN OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL THEN N'0' ELSE N'1' END;"
+        Assert-True ($workloadExists[0] -eq '0') 'M06 reset must complete before the queued plan-forcing demo.'
+        Assert-True ($raceStateExists[0] -eq '0') 'The queued missing-workload demo must not leave a stale Query Store recovery record.'
+    }
+    finally {
+        try { Invoke-Query "INSERT ops.M06QueryStoreRaceSync (Actor) SELECT N'Release' WHERE NOT EXISTS (SELECT 1 FROM ops.M06QueryStoreRaceSync WHERE Actor = N'Release');" | Out-Null } catch { }
+        foreach ($job in @($blocker, $resetJob, $planJob) | Where-Object { $null -ne $_ }) {
+            if ($job.State -eq 'Running') { Stop-Job -Job $job -ErrorAction SilentlyContinue }
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+        try { Invoke-Query 'DROP TABLE IF EXISTS ops.M06QueryStoreRaceSync;' | Out-Null } catch { }
+    }
 }
 catch {
     Add-Failure "Runtime validation failed: $($_.Exception.Message)"
