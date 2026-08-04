@@ -209,13 +209,17 @@ $dockerFiles = @(
 )
 foreach ($relative in $dockerFiles) { $null = Get-RequiredText $relative }
 $dockerfile = Get-RequiredText 'DEMO\docker\Dockerfile'
-foreach ($required in @(
-    'sha256:86cc6144ef39bb0fbed2329e1ad79b13ee82e7b2e4739213a0db0800e668a74a',
-    'mssql-server-fts=17.0.4065.4-1',
-    'mssql-server-polybase=17.0.4065.4-1'
-)) {
-    Assert-Present -Text $dockerfile -Pattern ([regex]::Escape($required)) `
-        -Message "DEMO/docker/Dockerfile must pin $required."
+Assert-Present -Text $dockerfile `
+    -Pattern '(?im)^\s*FROM\s+mcr\.microsoft\.com/mssql/server:2025-latest\s*$' `
+    -Message 'DEMO/docker/Dockerfile must use exactly mcr.microsoft.com/mssql/server:2025-latest.'
+Assert-Present -Text $dockerfile `
+    -Pattern 'https://packages\.microsoft\.com/config/ubuntu/24\.04/mssql-server-2025\.list' `
+    -Message 'DEMO/docker/Dockerfile must configure the official Ubuntu 24.04 SQL Server 2025 repository.'
+foreach ($package in 'mssql-server-fts', 'mssql-server-polybase') {
+    Assert-Present -Text $dockerfile -Pattern ("(?is)apt(?:-get)?\s+install\b.{0,250}\b" + [regex]::Escape($package) + "\b") `
+        -Message "DEMO/docker/Dockerfile must install $package from the SQL Server 2025 repository."
+    Assert-Absent -Text $dockerfile -Pattern ("\b" + [regex]::Escape($package) + "\s*=") `
+        -Message "DEMO/docker/Dockerfile must not pin $package to a dated package version."
 }
 
 if ($failures.Count -gt 0) {

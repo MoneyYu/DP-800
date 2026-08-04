@@ -147,6 +147,20 @@ SELECT CASE WHEN (SELECT COUNT(*) FROM dbo.MemoryProbe) = 1
     $polyBaseInstalled = Get-Scalar -Database 'master' -Query "SELECT CONVERT(varchar(1), SERVERPROPERTY('IsPolyBaseInstalled'));"
     $ftsInstalled = Get-Scalar -Database 'master' -Query "SELECT CONVERT(varchar(1), FULLTEXTSERVICEPROPERTY('IsFullTextInstalled'));"
     Write-Host "PolyBase installed: $polyBaseInstalled; Full-Text installed: $ftsInstalled"
+    $engineVersion = Get-Scalar -Database 'master' -Query "SELECT CONVERT(varchar(128), SERVERPROPERTY('ProductVersion'));"
+    foreach ($package in 'mssql-server-fts', 'mssql-server-polybase') {
+        $packageVersion = (& docker exec $Container dpkg-query -W "-f=`${Version}" $package 2>$null | Out-String).Trim()
+        $packageEngineVersion = $packageVersion -replace '-\d+$', ''
+        if ([string]::IsNullOrWhiteSpace($packageVersion)) {
+            Add-Failure "$package is not installed in '$Container'."
+        }
+        elseif ($packageEngineVersion -ne $engineVersion) {
+            Add-Failure "$package version '$packageVersion' is not compatible with SQL engine version '$engineVersion'."
+        }
+        else {
+            Write-Host "$package version: $packageVersion (compatible with SQL engine $engineVersion)"
+        }
+    }
 
     # M03 JSON output/aggregate/shredding, plus M11 single-object JSON output.
     Invoke-Query -Database $probeDatabase -Query @"
