@@ -5,9 +5,7 @@ param(
     [string]$Container = 'mssql2025'
 )
 
-# Focused runtime contract for the M01 specialized-table teaching scripts. The
-# manifest intentionally does not yet list common/02-specialized-tables.sql, so
-# this test invokes it explicitly through the repository SQL wrapper.
+# Focused runtime contract for the M01 specialized-table teaching scripts.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -15,10 +13,8 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $demoRoot = Join-Path $repoRoot 'DEMO'
 $bootstrapScript = Join-Path $demoRoot 'bootstrap\Invoke-Bootstrap.ps1'
+$moduleRunner = Join-Path $demoRoot 'scripts\Invoke-DemoModule.ps1'
 $sqlWrapper = Join-Path $demoRoot 'scripts\Invoke-Dp800Sql.ps1'
-$objectsScript = Join-Path $demoRoot 'M01\common\01-objects.sql'
-$specializedScript = Join-Path $demoRoot 'M01\common\02-specialized-tables.sql'
-$inspectScript = Join-Path $demoRoot 'M01\local\02-inspect-specialized.sql'
 $resetScript = Join-Path $demoRoot 'M01\reset\reset.sql'
 $failures = [System.Collections.Generic.List[string]]::new()
 
@@ -37,12 +33,19 @@ function Assert-Scalar {
     param([string]$Label, [string]$Expected, [string]$Actual)
     if ($Actual -ne $Expected) { Add-Failure "$Label returned '$Actual' (expected '$Expected')." }
 }
-function Invoke-ModuleSql {
-    param([string]$InputFile)
-    $output = & pwsh -NoProfile -File $sqlWrapper -InputFile $InputFile -Database AdventureGearAI -Server $Server -User $User 2>&1
+function Invoke-M01Reset {
+    $output = & pwsh -NoProfile -File $sqlWrapper -InputFile $resetScript -Database AdventureGearAI -Server $Server -User $User 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "Repository SQL wrapper failed for $InputFile. $($output -join ' ')"
+        throw "Repository SQL wrapper failed for M01 reset. $($output -join ' ')"
     }
+}
+function Invoke-M01Runner {
+    param([switch]$Force)
+    $output = & pwsh -NoProfile -File $moduleRunner -Modules 1 -Force:$Force -Database AdventureGearAI -Server $Server -User $User 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Normal M01 module runner failed. $($output -join ' ')"
+    }
+    return ($output -join [Environment]::NewLine)
 }
 
 $sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
@@ -72,12 +75,16 @@ try {
     $coreProductCount = Get-Scalar 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.Products;'
     $canonicalMetadata = Get-Scalar "SET NOCOUNT ON; SELECT CONVERT(nvarchar(max), ProductMetadata) FROM catalog.Products WHERE ProductID = 1;"
 
-    # Full M01 reset -> apply -> reset -> reapply lifecycle. Every SQL asset is
-    # executed via the guarded repository wrapper and targets AdventureGearAI.
-    Invoke-ModuleSql -InputFile $resetScript
-    Invoke-ModuleSql -InputFile $objectsScript
-    Invoke-ModuleSql -InputFile $specializedScript
-    Invoke-ModuleSql -InputFile $inspectScript
+    # Full M01 reset -> runner apply -> forced reapply -> reset -> runner
+    # reapply lifecycle. The normal runner is the only setup path under test.
+    Invoke-M01Reset
+    $firstRunOutput = Invoke-M01Runner
+    if ($firstRunOutput -notmatch '02-specialized-tables\.sql') {
+        Add-Failure "Normal M01 runner did not execute 02-specialized-tables.sql. Output: $firstRunOutput"
+    }
+    if ($firstRunOutput -notmatch '02-inspect-specialized\.sql') {
+        Add-Failure "Normal M01 runner did not execute 02-inspect-specialized.sql. Output: $firstRunOutput"
+    }
 
     Assert-Scalar -Label 'Native json type' -Expected 'json' -Actual (Get-Scalar @"
 SELECT TYPE_NAME(user_type_id)
@@ -131,14 +138,20 @@ SELECT CASE WHEN EXISTS
             (Get-Scalar "SELECT COUNT(*) FROM sys.external_tables WHERE object_id = OBJECT_ID(N'catalog.ProductMetadataExternal');")
     }
 
-    Invoke-ModuleSql -InputFile $resetScript
+    $forceRunOutput = Invoke-M01Runner -Force
+    if ($forceRunOutput -notmatch '02-specialized-tables\.sql') {
+        Add-Failure "Forced M01 runner did not re-execute 02-specialized-tables.sql. Output: $forceRunOutput"
+    }
+    Assert-Scalar -Label 'M01 forced reapply ledger' -Expected '1' -Actual `
+        (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'ops.InventoryLedger') AND ledger_type = 2;")
+
+    Invoke-M01Reset
     Assert-Scalar -Label 'M01 reset preserves core products' -Expected $coreProductCount -Actual `
         (Get-Scalar 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.Products;')
     Assert-Scalar -Label 'M01 reset preserves canonical metadata' -Expected $canonicalMetadata -Actual `
         (Get-Scalar "SET NOCOUNT ON; SELECT CONVERT(nvarchar(max), ProductMetadata) FROM catalog.Products WHERE ProductID = 1;")
 
-    Invoke-ModuleSql -InputFile $objectsScript
-    Invoke-ModuleSql -InputFile $specializedScript
+    Invoke-M01Runner | Out-Null
     Assert-Scalar -Label 'M01 reapply ledger' -Expected '1' -Actual `
         (Get-Scalar "SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID(N'ops.InventoryLedger') AND ledger_type = 2;")
 }

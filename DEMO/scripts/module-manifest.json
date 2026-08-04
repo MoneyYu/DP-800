@@ -6,7 +6,7 @@
     "azureExcludedFromLocal": true
   },
   "modules": [
-    { "module": 1,  "ready": true,  "setup": { "common": ["../M01/common/01-objects.sql"], "local": ["../M01/local/01-inspect.sql"], "azure": [] } },
+    { "module": 1,  "ready": true,  "setup": { "common": ["../M01/common/01-objects.sql", "../M01/common/02-specialized-tables.sql"], "local": ["../M01/local/01-inspect.sql", "../M01/local/02-inspect-specialized.sql"], "azure": [] } },
     { "module": 2,  "ready": true,  "setup": { "common": ["../M02/common/01-programmability.sql"], "local": ["../M02/local/01-exercise.sql"], "azure": [] } },
     { "module": 3,  "ready": true,  "setup": { "common": ["../M03/common/01-advanced-objects.sql"], "local": ["../M03/local/01-advanced-queries.sql"], "azure": [] } },
     { "module": 4,  "ready": true,  "setup": { "common": [], "local": ["../M04/local/01-review-target.sql", "../M04/local/02-reference-improvement.sql"], "azure": [] } },
