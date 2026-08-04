@@ -150,12 +150,21 @@ function Get-UnicodeCodePointLengthAt {
 }
 
 function Test-IntendedHanCodePoint {
-    param([int]$CodePoint)
+    param([uint32]$CodePoint)
 
     return ($CodePoint -ge 0x3400 -and $CodePoint -le 0x4DBF) -or
         ($CodePoint -ge 0x4E00 -and $CodePoint -le 0x9FFF) -or
         ($CodePoint -ge 0xF900 -and $CodePoint -le 0xFAFF) -or
-        ($CodePoint -ge 0x20000 -and $CodePoint -le 0x2EBEF)
+        ($CodePoint -ge 0x20000 -and $CodePoint -le 0x2A6DF) -or
+        ($CodePoint -ge 0x2A700 -and $CodePoint -le 0x2B73F) -or
+        ($CodePoint -ge 0x2B740 -and $CodePoint -le 0x2B81F) -or
+        ($CodePoint -ge 0x2B820 -and $CodePoint -le 0x2CEAF) -or
+        ($CodePoint -ge 0x2CEB0 -and $CodePoint -le 0x2EBEF) -or
+        ($CodePoint -ge 0x2EBF0 -and $CodePoint -le 0x2EE5D) -or
+        ($CodePoint -ge 0x2F800 -and $CodePoint -le 0x2FA1F) -or
+        ($CodePoint -ge 0x30000 -and $CodePoint -le 0x3134A) -or
+        ($CodePoint -ge 0x31350 -and $CodePoint -le 0x323AF) -or
+        ($CodePoint -ge 0x323B0 -and $CodePoint -le 0x33479)
 }
 
 function Test-TextContainsIntendedHan {
@@ -239,6 +248,30 @@ foreach ($fixture in @(
     )) {
     if ((Test-SqlTextAllowsHanOnlyInComments -Text $fixture.Text) -ne $fixture.Expected) {
         Add-Failure "SQL lexical fixture failed for $($fixture.Name)."
+    }
+}
+
+foreach ($range in @(
+        [pscustomobject]@{ Name = 'Extension I'; Start = 0x2EBF0; End = 0x2EE5D }
+        [pscustomobject]@{ Name = 'Compatibility Ideographs Supplement'; Start = 0x2F800; End = 0x2FA1F }
+        [pscustomobject]@{ Name = 'Extension G'; Start = 0x30000; End = 0x3134A }
+        [pscustomobject]@{ Name = 'Extension H'; Start = 0x31350; End = 0x323AF }
+        [pscustomobject]@{ Name = 'Extension J'; Start = 0x323B0; End = 0x33479 }
+    )) {
+    if (-not (Test-IntendedHanCodePoint -CodePoint $range.Start) -or
+        -not (Test-IntendedHanCodePoint -CodePoint $range.End)) {
+        Add-Failure "$($range.Name) Han range boundary is not recognized."
+    }
+
+    $han = [char]::ConvertFromUtf32($range.End)
+    foreach ($fixture in @(
+            [pscustomobject]@{ Text = "SELECT $han;"; Expected = $false; Name = "$($range.Name) executable Han text" }
+            [pscustomobject]@{ Text = "SELECT N'$han';"; Expected = $false; Name = "$($range.Name) string Han text" }
+            [pscustomobject]@{ Text = "-- $han"; Expected = $true; Name = "$($range.Name) Han comment text" }
+        )) {
+        if ((Test-SqlTextAllowsHanOnlyInComments -Text $fixture.Text) -ne $fixture.Expected) {
+            Add-Failure "SQL lexical fixture failed for $($fixture.Name)."
+        }
     }
 }
 
