@@ -25,6 +25,7 @@ if (-not $docker) { Add-Failure 'Required local environment is missing: docker i
 
 $password = $null
 $temporaryScript = $null
+$temporaryBomScript = $null
 $originalSqlCmdPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
 
 try {
@@ -76,6 +77,34 @@ SELECT N'繁中字串測試' AS LocalizationProbe;
                 elseif ($wrapperOutput -match 'ç¹|ä¸') {
                     Add-Failure 'Invoke-Dp800Sql UTF-8 no-BOM smoke output contains known mojibake.'
                 }
+                else {
+                    Write-Host 'Invoke-Dp800Sql UTF-8 no-BOM smoke passed.'
+                }
+
+                $temporaryBomScript = Join-Path $repoRoot ('.localization-runtime-bom-{0}.sql' -f [guid]::NewGuid().ToString('N'))
+                $bomSql = @"
+-- English localization encoding regression comment
+-- 繁體中文註解：確認 UTF-8 BOM SQL 指令碼。
+SELECT N'繁中 BOM 字串測試' AS LocalizationProbe;
+"@
+                [System.IO.File]::WriteAllText(
+                    $temporaryBomScript,
+                    $bomSql,
+                    [System.Text.UTF8Encoding]::new($true))
+
+                $bomOutput = & $sqlWrapper -InputFile $temporaryBomScript -Database master -Server $Server -User $User 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    Add-Failure "Invoke-Dp800Sql UTF-8 BOM smoke failed with exit $LASTEXITCODE."
+                }
+                elseif ($bomOutput -notmatch [regex]::Escape('繁中 BOM 字串測試')) {
+                    Add-Failure 'Invoke-Dp800Sql UTF-8 BOM smoke did not return the exact Chinese literal.'
+                }
+                elseif ($bomOutput -match 'ç¹|ä¸') {
+                    Add-Failure 'Invoke-Dp800Sql UTF-8 BOM smoke output contains known mojibake.'
+                }
+                else {
+                    Write-Host 'Invoke-Dp800Sql UTF-8 BOM smoke passed.'
+                }
             }
         }
     }
@@ -97,6 +126,9 @@ SELECT N'繁中字串測試' AS LocalizationProbe;
 finally {
     if ($temporaryScript -and (Test-Path -LiteralPath $temporaryScript)) {
         Remove-Item -LiteralPath $temporaryScript -Force
+    }
+    if ($temporaryBomScript -and (Test-Path -LiteralPath $temporaryBomScript)) {
+        Remove-Item -LiteralPath $temporaryBomScript -Force
     }
     [Environment]::SetEnvironmentVariable('SQLCMDPASSWORD', $originalSqlCmdPassword, 'Process')
     $password = $null
