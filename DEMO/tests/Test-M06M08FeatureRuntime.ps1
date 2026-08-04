@@ -94,14 +94,19 @@ $m08SetupLockAcquire = Get-SourceIndex $m08Api 'EXEC @appLockResult = sys.sp_get
 $m08SetupStatusDdl = Get-SourceIndex $m08Api "IF OBJECT_ID(N'api.CdcRuntimeStatus'"
 Assert-True ($m08SetupLockAcquire -ge 0 -and $m08SetupStatusDdl -ge 0 -and $m08SetupLockAcquire -lt $m08SetupStatusDdl) 'M08 setup must acquire the CDC ownership lock before CdcRuntimeStatus DDL.'
 $m08SetupFinalStatusRead = Get-SourceIndex $m08Api 'FROM api.CdcRuntimeStatus' -Last
+$m08SetupFinalApiDdl = Get-SourceIndex $m08Api 'CREATE OR ALTER PROCEDURE api.GetProductsByCategory'
 $m08SetupFinalLockRelease = Get-SourceIndex $m08Api 'EXEC sys.sp_releaseapplock' -Last
 Assert-True ($m08SetupFinalStatusRead -ge 0 -and $m08SetupFinalLockRelease -gt $m08SetupFinalStatusRead) 'M08 setup must release the CDC ownership lock only after its final CdcRuntimeStatus read.'
+Assert-True ($m08SetupFinalApiDdl -ge 0 -and $m08SetupFinalLockRelease -gt $m08SetupFinalApiDdl) 'M08 setup must release the CDC ownership lock only after its final API DDL operation.'
 
+$m08ResetRunningGuard = Get-SourceIndex $m08Reset 'M08 reset refused while Module 8 is Running'
+$m08ResetCdcDisable = Get-SourceIndex $m08Reset 'EXEC sys.sp_cdc_disable_table'
 $m08ResetStatusDrop = Get-SourceIndex $m08Reset 'DROP TABLE IF EXISTS api.CdcRuntimeStatus'
 $m08ResetStateUpdate = Get-SourceIndex $m08Reset 'UPDATE ops.DemoModuleState'
 $m08ResetFinalApiDrop = Get-SourceIndex $m08Reset 'DROP VIEW IF EXISTS api.Categories'
 $m08ResetCatch = Get-SourceIndex $m08Reset 'BEGIN CATCH'
 $m08ResetFinalLockRelease = Get-SourceIndex $m08Reset 'EXEC sys.sp_releaseapplock' -Last
+Assert-True ($m08ResetRunningGuard -ge 0 -and $m08ResetCdcDisable -gt $m08ResetRunningGuard -and $m08ResetStatusDrop -gt $m08ResetRunningGuard) 'M08 reset must reject Running module state before CDC or API teardown.'
 Assert-True ($m08ResetStatusDrop -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetStatusDrop) 'M08 reset must release the CDC ownership lock only after deleting CdcRuntimeStatus.'
 Assert-True ($m08ResetStateUpdate -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetStateUpdate) 'M08 reset must keep the CDC ownership lock through the M08 module state update.'
 Assert-True ($m08ResetFinalApiDrop -ge 0 -and $m08ResetFinalLockRelease -gt $m08ResetFinalApiDrop) 'M08 reset must release the CDC ownership lock only after its final API teardown operation.'
@@ -163,6 +168,15 @@ function Invoke-SqlFile {
     $output = & $sqlcmd.Source -S $Server -U $User -d $Database -i $path -h -1 -W -b -C -I -x 2>&1
     if ($LASTEXITCODE -ne 0) { throw "sqlcmd file '$RelativePath' failed against '$Database': $($output -join ' ')" }
     return @($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' -and $_ -notmatch '^\(\d+ rows? affected\)$' })
+}
+function Invoke-SqlFileExpectFailure {
+    param([string]$Database, [string]$RelativePath)
+    $path = Join-Path $repoRoot $RelativePath
+    $output = & $sqlcmd.Source -S $Server -U $User -d $Database -i $path -h -1 -W -b -C -I -x 2>&1
+    return @{
+        ExitCode = $LASTEXITCODE
+        Output = @($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' })
+    }
 }
 function Remove-TestDatabase {
     param([string]$Database)
@@ -279,6 +293,61 @@ FROM api.CdcRuntimeStatus
 WHERE CdcRuntimeStatusID = 1;
 "@)
     Assert-True (($recordedM08Capture | Select-Object -First 1) -eq $m08CaptureInstance) 'M08 must record only its dedicated CDC capture instance.'
+
+    $m08ApiSignatureBeforeRunningReset = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CONCAT(
+    OBJECT_ID(N'api.CdcRuntimeStatus', N'U'), N'|',
+    OBJECT_ID(N'api.GetProductsByCategory', N'P'), N'|',
+    OBJECT_ID(N'api.InventoryAvailability', N'V'), N'|',
+    OBJECT_ID(N'api.ProductCatalog', N'V'), N'|',
+    OBJECT_ID(N'api.Products', N'V'), N'|',
+    OBJECT_ID(N'api.Categories', N'V'));
+"@)
+    $m08CdcSignatureBeforeRunningReset = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CONCAT(
+    (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()), N'|',
+    CASE WHEN EXISTS
+    (
+        SELECT 1
+        FROM cdc.change_tables
+        WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+          AND capture_instance = N'$m08CaptureInstance'
+    ) THEN N'1' ELSE N'0' END);
+"@)
+    $originalM08Status = (Invoke-Query -Database AdventureGearAI -Query 'SELECT Status FROM ops.DemoModuleState WHERE ModuleNumber = 8;' | Select-Object -First 1)
+    Assert-True (-not [string]::IsNullOrWhiteSpace($originalM08Status)) 'M08 state row must exist before the Running-state reset collision test.'
+    Invoke-Query -Database AdventureGearAI -Query "UPDATE ops.DemoModuleState SET Status = N'Running', UpdatedAtUtc = SYSUTCDATETIME() WHERE ModuleNumber = 8;" | Out-Null
+
+    $runningReset = Invoke-SqlFileExpectFailure -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql'
+    Assert-True ($runningReset.ExitCode -ne 0) 'M08 reset must fail while Module 8 is Running.'
+    Assert-True (($runningReset.Output -join ' ') -match 'M08 reset refused while Module 8 is Running') 'M08 reset must report that a Running Module 8 cannot be reset.'
+    $m08ApiSignatureAfterRunningReset = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CONCAT(
+    OBJECT_ID(N'api.CdcRuntimeStatus', N'U'), N'|',
+    OBJECT_ID(N'api.GetProductsByCategory', N'P'), N'|',
+    OBJECT_ID(N'api.InventoryAvailability', N'V'), N'|',
+    OBJECT_ID(N'api.ProductCatalog', N'V'), N'|',
+    OBJECT_ID(N'api.Products', N'V'), N'|',
+    OBJECT_ID(N'api.Categories', N'V'));
+"@)
+    $m08CdcSignatureAfterRunningReset = @(Invoke-Query -Database AdventureGearAI -Query @"
+SELECT CONCAT(
+    (SELECT is_cdc_enabled FROM sys.databases WHERE database_id = DB_ID()), N'|',
+    CASE WHEN EXISTS
+    (
+        SELECT 1
+        FROM cdc.change_tables
+        WHERE source_object_id = OBJECT_ID(N'catalog.Products')
+          AND capture_instance = N'$m08CaptureInstance'
+    ) THEN N'1' ELSE N'0' END);
+"@)
+    Assert-True (($m08ApiSignatureAfterRunningReset | Select-Object -First 1) -eq ($m08ApiSignatureBeforeRunningReset | Select-Object -First 1)) 'M08 Running-state reset rejection must preserve all API objects.'
+    Assert-True (($m08CdcSignatureAfterRunningReset | Select-Object -First 1) -eq ($m08CdcSignatureBeforeRunningReset | Select-Object -First 1)) 'M08 Running-state reset rejection must preserve CDC ownership objects.'
+    $m08StatusAfterRunningReset = (Invoke-Query -Database AdventureGearAI -Query 'SELECT Status FROM ops.DemoModuleState WHERE ModuleNumber = 8;' | Select-Object -First 1)
+    Assert-True ($m08StatusAfterRunningReset -eq 'Running') 'M08 Running-state reset rejection must not change the module state.'
+    $escapedOriginalM08Status = $originalM08Status.Replace("'", "''")
+    Invoke-Query -Database AdventureGearAI -Query "UPDATE ops.DemoModuleState SET Status = N'$escapedOriginalM08Status', UpdatedAtUtc = SYSUTCDATETIME() WHERE ModuleNumber = 8;" | Out-Null
+
     Invoke-SqlFile -Database AdventureGearAI -RelativePath 'DEMO\M08\reset\reset.sql' | Out-Null
     $cdcPreserved = @(Invoke-Query -Database AdventureGearAI -Query @"
 SELECT CASE WHEN EXISTS

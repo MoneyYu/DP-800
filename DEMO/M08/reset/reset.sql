@@ -79,6 +79,15 @@ IF @AppLockResult < 0
 SET @AppLockHeld = 1;
 
 BEGIN TRY
+    IF EXISTS
+    (
+        SELECT 1
+        FROM ops.DemoModuleState
+        WHERE ModuleNumber = 8
+          AND Status = N'Running'
+    )
+        THROW 51082, 'M08 reset refused while Module 8 is Running; wait for setup to finish before resetting.', 1;
+
     /* The application lock protects this revalidation-and-disable sequence from
        concurrent M08 setup/reset runs. Do not infer ownership from the source
        table: only the recorded dedicated capture identity is removable. */

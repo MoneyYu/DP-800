@@ -16,14 +16,6 @@ GO
 USE [AdventureGearAI];
 GO
 
-/* Remove any legacy duplicate API tables/views from earlier per-module demos.
-   移除先前每一模組示範遺留的任何重複 API 資料表/檢視表。
-   */
-DROP VIEW IF EXISTS dbo.ProductCatalogView;
-DROP TABLE IF EXISTS dbo.ApiProducts;
-DROP TABLE IF EXISTS dbo.ApiCategories;
-GO
-
 DECLARE @engineEdition int = CONVERT(int, SERVERPROPERTY('EngineEdition'));
 DECLARE @sqlAgentAvailable bit = 0;
 DECLARE @databaseCdcEnabledByModule bit = 0;
@@ -49,6 +41,12 @@ BEGIN TRY
         THROW 51080, 'M08 could not acquire the CDC ownership lock.', 1;
 
     SET @appLockHeld = 1;
+
+    /* Remove any legacy duplicate API tables/views from earlier per-module demos.
+       Keep this under the M08 lifecycle lock with every owned API DDL operation. */
+    DROP VIEW IF EXISTS dbo.ProductCatalogView;
+    DROP TABLE IF EXISTS dbo.ApiProducts;
+    DROP TABLE IF EXISTS dbo.ApiCategories;
 
     IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NULL
     BEGIN
@@ -230,21 +228,11 @@ BEGIN TRY
         M08CaptureTableCreatedAt,
         Behavior
     FROM api.CdcRuntimeStatus;
-END TRY
-BEGIN CATCH
-    IF @appLockHeld = 1
-        EXEC sys.sp_releaseapplock
-            @Resource = N'DP800.M08.CdcOwnership',
-            @LockOwner = N'Session';
-    THROW;
-END CATCH;
 
-IF @appLockHeld = 1
-    EXEC sys.sp_releaseapplock
-        @Resource = N'DP800.M08.CdcOwnership',
-        @LockOwner = N'Session';
-GO
-
+    /* CREATE OR ALTER VIEW/PROCEDURE must be the first statement in their own
+       batches. Execute them dynamically so the same TRY/CATCH owns both their
+       failure path and the session applock. */
+    EXEC sys.sp_executesql N'
 CREATE OR ALTER VIEW api.Categories
 AS
 SELECT
@@ -252,9 +240,9 @@ SELECT
     c.CategoryName,
     c.Description,
     c.IsActive
-FROM catalog.Categories AS c;
-GO
+FROM catalog.Categories AS c;';
 
+    EXEC sys.sp_executesql N'
 CREATE OR ALTER VIEW api.Products
 AS
 SELECT
@@ -266,9 +254,9 @@ SELECT
     COALESCE(i.QuantityOnHand, 0) AS UnitsInStock,
     p.IsActive
 FROM catalog.Products AS p
-LEFT JOIN catalog.Inventory AS i ON i.ProductID = p.ProductID;
-GO
+LEFT JOIN catalog.Inventory AS i ON i.ProductID = p.ProductID;';
 
+    EXEC sys.sp_executesql N'
 CREATE OR ALTER VIEW api.ProductCatalog
 AS
 SELECT
@@ -278,16 +266,16 @@ SELECT
     p.UnitPrice,
     COALESCE(i.QuantityOnHand, 0) AS UnitsInStock,
     CASE
-        WHEN COALESCE(i.QuantityOnHand, 0) = 0 THEN N'Out of stock'
-        WHEN i.QuantityOnHand < i.ReorderThreshold THEN N'Low stock'
-        ELSE N'Available'
+        WHEN COALESCE(i.QuantityOnHand, 0) = 0 THEN N''Out of stock''
+        WHEN i.QuantityOnHand < i.ReorderThreshold THEN N''Low stock''
+        ELSE N''Available''
     END AS StockStatus
 FROM catalog.Products AS p
 INNER JOIN catalog.Categories AS c ON c.CategoryID = p.CategoryID
 LEFT JOIN catalog.Inventory AS i ON i.ProductID = p.ProductID
-WHERE p.IsActive = 1;
-GO
+WHERE p.IsActive = 1;';
 
+    EXEC sys.sp_executesql N'
 CREATE OR ALTER VIEW api.InventoryAvailability
 AS
 SELECT
@@ -297,14 +285,14 @@ SELECT
     i.ReorderThreshold,
     i.WarehouseLocation,
     CASE
-        WHEN i.QuantityOnHand = 0 THEN N'Out of stock'
-        WHEN i.QuantityOnHand < i.ReorderThreshold THEN N'Reorder'
-        ELSE N'In stock'
+        WHEN i.QuantityOnHand = 0 THEN N''Out of stock''
+        WHEN i.QuantityOnHand < i.ReorderThreshold THEN N''Reorder''
+        ELSE N''In stock''
     END AS AvailabilityStatus
 FROM catalog.Inventory AS i
-INNER JOIN catalog.Products AS p ON p.ProductID = i.ProductID;
-GO
+INNER JOIN catalog.Products AS p ON p.ProductID = i.ProductID;';
 
+    EXEC sys.sp_executesql N'
 CREATE OR ALTER PROCEDURE api.GetProductsByCategory
     @CategoryID int = NULL
 AS
@@ -322,7 +310,20 @@ BEGIN
     FROM api.Products
     WHERE @CategoryID IS NULL OR CategoryID = @CategoryID
     ORDER BY ProductID;
-END;
+END;';
+
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
+    SET @appLockHeld = 0;
+END TRY
+BEGIN CATCH
+    IF @appLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
+    THROW;
+END CATCH;
 GO
 
 PRINT N'M08 api.* views, CDC status, and safe product procedure are ready.';
