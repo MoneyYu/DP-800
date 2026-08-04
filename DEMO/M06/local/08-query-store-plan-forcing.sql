@@ -15,6 +15,8 @@ DECLARE @appLockHeld bit = 0;
 DECLARE @priorQueryCaptureMode nvarchar(60);
 DECLARE @expectedDemoQueryCaptureMode nvarchar(60) = N'ALL';
 DECLARE @currentQueryCaptureMode nvarchar(60);
+DECLARE @interruptedPriorQueryCaptureMode nvarchar(60);
+DECLARE @interruptedExpectedDemoQueryCaptureMode nvarchar(60);
 DECLARE @queryId bigint;
 DECLARE @planId bigint;
 DECLARE @planCount int;
@@ -64,6 +66,43 @@ BEGIN TRY
     IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState', N'RecoveryPhase') IS NULL
         ALTER TABLE ops.M06QueryStoreRuntimeState
             ADD RecoveryPhase nvarchar(30) NULL;
+
+    /* Resolve an interrupted demo before replacing its recovery state. The
+       dynamic statements support an upgraded legacy table in this batch. */
+    EXEC sys.sp_executesql
+        N'SELECT
+              @PriorQueryCaptureMode = PriorQueryCaptureMode,
+              @ExpectedDemoQueryCaptureMode = ExpectedDemoQueryCaptureMode
+          FROM ops.M06QueryStoreRuntimeState
+          WHERE M06QueryStoreRuntimeStateID = 1
+            AND RecoveryPhase = N''Active'';',
+        N'@PriorQueryCaptureMode nvarchar(60) OUTPUT, @ExpectedDemoQueryCaptureMode nvarchar(60) OUTPUT',
+        @PriorQueryCaptureMode = @interruptedPriorQueryCaptureMode OUTPUT,
+        @ExpectedDemoQueryCaptureMode = @interruptedExpectedDemoQueryCaptureMode OUTPUT;
+
+    IF @interruptedPriorQueryCaptureMode IS NOT NULL
+    BEGIN
+        SELECT @currentQueryCaptureMode = query_capture_mode_desc
+        FROM sys.database_query_store_options;
+
+        /* A different current mode was selected by the user after the
+           interruption, so preserve it while retiring the stale record. */
+        IF @currentQueryCaptureMode = @interruptedExpectedDemoQueryCaptureMode
+        BEGIN
+            DECLARE @restoreInterruptedDemo nvarchar(max) =
+                N'ALTER DATABASE CURRENT SET QUERY_STORE (QUERY_CAPTURE_MODE = ' +
+                @interruptedPriorQueryCaptureMode + N');';
+            EXEC sys.sp_executesql @restoreInterruptedDemo;
+        END;
+
+        EXEC sys.sp_executesql
+            N'UPDATE ops.M06QueryStoreRuntimeState
+              SET RecoveryPhase = N''Restored''
+              WHERE M06QueryStoreRuntimeStateID = 1
+                AND RecoveryPhase = N''Active'';
+              DELETE FROM ops.M06QueryStoreRuntimeState
+              WHERE M06QueryStoreRuntimeStateID = 1;';
+    END;
 
     SELECT @priorQueryCaptureMode = query_capture_mode_desc
     FROM sys.database_query_store_options;

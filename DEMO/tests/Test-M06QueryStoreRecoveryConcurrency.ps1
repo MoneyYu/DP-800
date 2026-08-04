@@ -51,12 +51,15 @@ $planLock = Get-SourceIndex $planForcing 'sp_getapplock'
 $planWorkloadPrecondition = Get-SourceIndex $planForcing "IF OBJECT_ID(N'ops.PerformanceOrders', N'U') IS NULL"
 $planQueryStoreWork = Get-SourceIndex $planForcing "IF OBJECT_ID(N'ops.M06QueryStoreRuntimeState', N'U') IS NULL"
 $planMigration = Get-SourceIndex $planForcing "IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState'"
+$planActiveRecoveryRead = Get-SourceIndex $planForcing "AND RecoveryPhase = N''Active''"
+$planInitialStateDelete = Get-SourceIndex $planForcing 'DELETE FROM ops.M06QueryStoreRuntimeState'
 $planFinalRelease = Get-SourceIndex $planForcing 'sp_releaseapplock' -Last
 $planFinalCleanup = Get-SourceIndex $planForcing 'DELETE FROM ops.M06QueryStoreRuntimeState' -Last
 Assert-True ($planLock -ge 0 -and $planMigration -gt $planLock) 'M06 plan forcing must lock before recovery-state schema migration.'
 Assert-True ($planWorkloadPrecondition -gt $planLock -and $planWorkloadPrecondition -lt $planQueryStoreWork) 'M06 plan forcing must validate the workload only after acquiring the lifecycle lock and before Query Store work.'
 Assert-True ($planFinalRelease -gt $planFinalCleanup) 'M06 plan forcing must retain the lock through recovery-state cleanup.'
 Assert-True ($planForcing -match '(?is)SELECT\s+@currentQueryCaptureMode\s*=\s*query_capture_mode_desc.*?IF\s+@currentQueryCaptureMode\s*=\s*@expectedDemoQueryCaptureMode.*?ALTER\s+DATABASE\s+CURRENT\s+SET\s+QUERY_STORE') 'M06 plan forcing must reread the capture mode and restore only when it still matches the expected demo mode.'
+Assert-True ($planActiveRecoveryRead -gt $planMigration -and $planActiveRecoveryRead -lt $planInitialStateDelete) 'M06 plan forcing must resolve an active interrupted recovery record before replacing it.'
 
 $resetLock = Get-SourceIndex $reset 'sp_getapplock'
 $resetMigration = Get-SourceIndex $reset "IF COL_LENGTH(N'ops.M06QueryStoreRuntimeState'"
@@ -233,6 +236,31 @@ ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_
     # the demo must then fail only with its intentional workload precondition.
     $provision = & pwsh -NoProfile -File $runnerPath -Server $Server -User $User -Modules 6 -Force 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { throw "M06 reprovisioning failed: $provision" }
+
+    Invoke-Query @"
+CREATE TABLE ops.M06QueryStoreRuntimeState
+(
+    M06QueryStoreRuntimeStateID tinyint NOT NULL
+        CONSTRAINT PK_M06QueryStoreRuntimeState PRIMARY KEY
+        CONSTRAINT CK_M06QueryStoreRuntimeState_Singleton CHECK (M06QueryStoreRuntimeStateID = 1),
+    PriorQueryCaptureMode nvarchar(60) NOT NULL,
+    ExpectedDemoQueryCaptureMode nvarchar(60) NOT NULL,
+    RecoveryPhase nvarchar(30) NOT NULL
+        CONSTRAINT CK_M06QueryStoreRuntimeState_RecoveryPhase
+            CHECK (RecoveryPhase IN (N'Active', N'Restored')),
+    RecordedAtUtc datetime2(0) NOT NULL
+);
+INSERT ops.M06QueryStoreRuntimeState
+    (M06QueryStoreRuntimeStateID, PriorQueryCaptureMode, ExpectedDemoQueryCaptureMode, RecoveryPhase, RecordedAtUtc)
+VALUES (1, N'AUTO', N'ALL', N'Active', SYSUTCDATETIME());
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL);
+"@ | Out-Null
+    Invoke-SqlFile -Path $planForcingPath
+    $captureMode = Invoke-Query 'SELECT query_capture_mode_desc FROM sys.database_query_store_options;'
+    $stateCount = Invoke-Query 'SELECT COUNT(*) FROM ops.M06QueryStoreRuntimeState;'
+    Assert-True ($captureMode[0] -eq 'AUTO') 'Rerunning M06 plan-forcing after an interrupted AUTO-to-ALL demo must restore AUTO.'
+    Assert-True ($stateCount[0] -eq '0') 'Rerunning M06 plan-forcing after an interrupted demo must not leave a stale recovery record.'
+
     Invoke-Query @"
 DROP TABLE IF EXISTS ops.M06QueryStoreRaceSync;
 CREATE TABLE ops.M06QueryStoreRaceSync
