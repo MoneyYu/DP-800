@@ -69,13 +69,23 @@ BEGIN
         DatabaseName sysname NOT NULL
             CONSTRAINT CK_DemoEnvironment_DatabaseName CHECK (DatabaseName = N'AdventureGearAI'),
         DemoName nvarchar(100) NOT NULL,
-        SchemaVersion nvarchar(20) NOT NULL,
+        SchemaVersion nvarchar(40) NOT NULL,
         InitializedAtUtc datetime2(3) NOT NULL
             CONSTRAINT DF_DemoEnvironment_InitializedAtUtc DEFAULT SYSUTCDATETIME(),
         UpdatedAtUtc datetime2(3) NOT NULL
             CONSTRAINT DF_DemoEnvironment_UpdatedAtUtc DEFAULT SYSUTCDATETIME()
     );
 END;
+
+IF EXISTS
+(
+    SELECT 1
+    FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'ops.DemoEnvironment')
+      AND name = N'SchemaVersion'
+      AND max_length < 80
+)
+    ALTER TABLE ops.DemoEnvironment ALTER COLUMN SchemaVersion nvarchar(40) NOT NULL;
 GO
 
 IF OBJECT_ID(N'ops.DemoModuleState', N'U') IS NULL
@@ -101,6 +111,29 @@ BEGIN
             CHECK (CompletedAtUtc IS NULL OR StartedAtUtc IS NULL OR CompletedAtUtc >= StartedAtUtc)
     );
 END;
+GO
+
+/* Bootstrap owns only the IDs recorded here.  The registry version documents
+   the deterministic seed contract and prevents reruns from enriching user data. */
+IF OBJECT_ID(N'ops.BootstrapSeedRegistry', N'U') IS NULL
+BEGIN
+    CREATE TABLE ops.BootstrapSeedRegistry
+    (
+        SeedEntity nvarchar(20) NOT NULL,
+        SeedID int NOT NULL,
+        SeedVersion nvarchar(40) NOT NULL,
+        RecordedAtUtc datetime2(3) NOT NULL
+            CONSTRAINT DF_BootstrapSeedRegistry_RecordedAtUtc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_BootstrapSeedRegistry PRIMARY KEY (SeedEntity, SeedID)
+    );
+END;
+
+/* OUTPUT INTO cannot target tables with enabled check constraints. Remove the
+   short-lived initial constraint names from interrupted pre-release runs. */
+IF OBJECT_ID(N'ops.CK_BootstrapSeedRegistry_SeedEntity', N'C') IS NOT NULL
+    ALTER TABLE ops.BootstrapSeedRegistry DROP CONSTRAINT CK_BootstrapSeedRegistry_SeedEntity;
+IF OBJECT_ID(N'ops.CK_BootstrapSeedRegistry_SeedID', N'C') IS NOT NULL
+    ALTER TABLE ops.BootstrapSeedRegistry DROP CONSTRAINT CK_BootstrapSeedRegistry_SeedID;
 GO
 
 /* ---------------------------------------------------------------------------
@@ -325,15 +358,15 @@ GO
 IF NOT EXISTS (SELECT 1 FROM ops.DemoEnvironment)
 BEGIN
     INSERT ops.DemoEnvironment (DemoEnvironmentID, DatabaseName, DemoName, SchemaVersion)
-    VALUES (1, N'AdventureGearAI', N'AdventureGearAI unified demo', N'2.0.0-json170');
+    VALUES (1, N'AdventureGearAI', N'AdventureGearAI unified demo', N'2.1.0-json170-seedownership');
 END;
 GO
 
 UPDATE ops.DemoEnvironment
-SET SchemaVersion = N'2.0.0-json170',
+SET SchemaVersion = N'2.1.0-json170-seedownership',
     UpdatedAtUtc = SYSUTCDATETIME()
 WHERE DemoEnvironmentID = 1
-  AND SchemaVersion <> N'2.0.0-json170';
+  AND SchemaVersion <> N'2.1.0-json170-seedownership';
 GO
 
 INSERT ops.DemoModuleState (ModuleNumber)
@@ -364,7 +397,10 @@ GO
 IF NOT EXISTS (SELECT 1 FROM catalog.Products)
 BEGIN
     SET IDENTITY_INSERT catalog.Products ON;
-    INSERT catalog.Products (ProductID, CategoryID, ProductName, Sku, UnitPrice, ProductMetadata) VALUES
+    INSERT catalog.Products (ProductID, CategoryID, ProductName, Sku, UnitPrice, ProductMetadata)
+    OUTPUT N'Product', INSERTED.ProductID, N'2.1.0-seed-ownership'
+        INTO ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
+    VALUES
         (1, 1, N'Trailblazer 29 Bike', N'BIKE-TB29', 1499.00, N'{"terrain":"rocky trails","frame":"aluminum","wheelSize":29}'),
         (2, 1, N'Summit Carbon Bike', N'BIKE-SC01', 2899.00, N'{"terrain":"alpine","frame":"carbon","wheelSize":29}'),
         (3, 1, N'Gravel Rambler Bike', N'BIKE-GR07', 1899.00, N'{"terrain":"gravel","frame":"steel","wheelSize":28}'),
@@ -402,7 +438,10 @@ GO
 IF NOT EXISTS (SELECT 1 FROM customer.Customers)
 BEGIN
     SET IDENTITY_INSERT customer.Customers ON;
-    INSERT customer.Customers (CustomerID, CustomerName, Email, SalesRegion, Preferences) VALUES
+    INSERT customer.Customers (CustomerID, CustomerName, Email, SalesRegion, Preferences)
+    OUTPUT N'Customer', INSERTED.CustomerID, N'2.1.0-seed-ownership'
+        INTO ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
+    VALUES
         (1, N'Avery Chen', N'avery.chen@example.invalid', N'West', N'{"newsletter":true,"preferredCategory":"Bikes"}'),
         (2, N'Morgan Lee', N'morgan.lee@example.invalid', N'East', N'{"newsletter":false,"preferredCategory":"Components"}'),
         (3, N'Jordan Patel', N'jordan.patel@example.invalid', N'Central', N'{"newsletter":true,"preferredCategory":"Navigation"}'),
@@ -416,7 +455,10 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sales.Orders)
 BEGIN
     SET IDENTITY_INSERT sales.Orders ON;
-    INSERT sales.Orders (OrderID, CustomerID, OrderDate, OrderStatus, ShippingMetadata) VALUES
+    INSERT sales.Orders (OrderID, CustomerID, OrderDate, OrderStatus, ShippingMetadata)
+    OUTPUT N'Order', INSERTED.OrderID, N'2.1.0-seed-ownership'
+        INTO ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
+    VALUES
         (1, 1, DATEADD(day, -20, SYSUTCDATETIME()), N'Delivered', N'{"carrier":"TrailExpress","priority":"standard"}'),
         (2, 2, DATEADD(day, -12, SYSUTCDATETIME()), N'Shipped', N'{"carrier":"TrailExpress","priority":"express"}'),
         (3, 3, DATEADD(day, -6, SYSUTCDATETIME()), N'Processing', N'{"carrier":"RidgeLogistics","priority":"standard"}'),
@@ -494,6 +536,8 @@ numbers(n) AS
     FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
 )
 INSERT catalog.Products (ProductID, CategoryID, ProductName, Sku, UnitPrice, ProductMetadata)
+OUTPUT N'Product', INSERTED.ProductID, N'2.1.0-seed-ownership'
+    INTO ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
 SELECT
     12 + n,
     ((11 + n) % 10) + 1,
@@ -513,19 +557,83 @@ WHERE NOT EXISTS (SELECT 1 FROM catalog.Products AS p WHERE p.ProductID = 12 + n
 SET IDENTITY_INSERT catalog.Products OFF;
 GO
 
-UPDATE catalog.Products
-SET ProductMetadata = CONCAT(
+/* Upgrade pre-registry installations only when every deterministic value,
+   including the rich JSON document, matches the published seed contract. */
+INSERT ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
+SELECT N'Product', p.ProductID, N'2.1.0-seed-ownership'
+FROM catalog.Products AS p
+WHERE NOT EXISTS
+(
+    SELECT 1
+    FROM ops.BootstrapSeedRegistry AS ownership
+    WHERE ownership.SeedEntity = N'Product'
+      AND ownership.SeedID = p.ProductID
+)
+AND
+(
+    EXISTS
+    (
+        SELECT 1
+        FROM (VALUES
+            (1, 1, N'Trailblazer 29 Bike', N'BIKE-TB29', CONVERT(decimal(10,2), 1499.00)),
+            (2, 1, N'Summit Carbon Bike', N'BIKE-SC01', CONVERT(decimal(10,2), 2899.00)),
+            (3, 1, N'Gravel Rambler Bike', N'BIKE-GR07', CONVERT(decimal(10,2), 1899.00)),
+            (4, 2, N'Puncture Guard Tire', N'COMP-PGT2', CONVERT(decimal(10,2), 62.50)),
+            (5, 2, N'Trail Drive Chain', N'COMP-TDC9', CONVERT(decimal(10,2), 48.75)),
+            (6, 2, N'Hydraulic Disc Brake', N'COMP-HDB4', CONVERT(decimal(10,2), 129.00)),
+            (7, 3, N'Night Beacon Light', N'ACC-NBL8', CONVERT(decimal(10,2), 44.90)),
+            (8, 3, N'Backcountry Hydration Pack', N'ACC-BHP3', CONVERT(decimal(10,2), 89.00)),
+            (9, 4, N'Winter Grip Gloves', N'CLO-WGG1', CONVERT(decimal(10,2), 39.00)),
+            (10, 4, N'All-Weather Trail Jacket', N'CLO-ATJ6', CONVERT(decimal(10,2), 159.00)),
+            (11, 5, N'Summit GPS Computer', N'NAV-SGC5', CONVERT(decimal(10,2), 279.00)),
+            (12, 5, N'Compact Route Beacon', N'NAV-CRB2', CONVERT(decimal(10,2), 119.00))
+        ) AS v(ProductID, CategoryID, ProductName, Sku, UnitPrice)
+        WHERE v.ProductID = p.ProductID
+          AND v.CategoryID = p.CategoryID
+          AND v.ProductName = p.ProductName
+          AND v.Sku = p.Sku
+          AND v.UnitPrice = p.UnitPrice
+    )
+    OR
+    (
+        p.ProductID BETWEEN 13 AND 150
+        AND p.CategoryID = ((p.ProductID - 1) % 10) + 1
+        AND p.ProductName = CONCAT(N'AdventureGear Series ', RIGHT(CONCAT(N'000', p.ProductID), 3))
+        AND p.Sku = CONCAT(N'AG-', RIGHT(CONCAT(N'000', p.ProductID), 3))
+        AND p.UnitPrice = CONVERT(decimal(10,2), 24.99 + ((p.ProductID - 12) * 7.25))
+    )
+)
+AND CONVERT(nvarchar(max), p.ProductMetadata) = CONCAT(
     N'{"terrain":"',
-    CASE ProductID WHEN 1 THEN N'rocky trails' WHEN 2 THEN N'alpine' WHEN 3 THEN N'gravel' ELSE N'mixed-surface' END,
+    CASE p.ProductID WHEN 1 THEN N'rocky trails' WHEN 2 THEN N'alpine' WHEN 3 THEN N'gravel' ELSE N'mixed-surface' END,
     N'","frame":"',
-    CASE ProductID WHEN 1 THEN N'aluminum' WHEN 2 THEN N'carbon' WHEN 3 THEN N'steel' ELSE N'alloy' END,
-    N'","product":{"id":', ProductID, N',"name":"', REPLACE(ProductName, N'"', N'\"'),
-    N'","sku":"', Sku, N'"},"specifications":{"wheelSize":',
-    CASE WHEN ProductID IN (1, 2) THEN 29 WHEN ProductID = 3 THEN 28 ELSE 27 END,
-    N',"price":', CONVERT(nvarchar(20), UnitPrice),
-    N',"dimensions":{"lengthCm":', 80 + (ProductID % 30), N',"widthCm":', 20 + (ProductID % 10),
+    CASE p.ProductID WHEN 1 THEN N'aluminum' WHEN 2 THEN N'carbon' WHEN 3 THEN N'steel' ELSE N'alloy' END,
+    N'","product":{"id":', p.ProductID, N',"name":"', REPLACE(p.ProductName, N'"', N'\"'),
+    N'","sku":"', p.Sku, N'"},"specifications":{"wheelSize":',
+    CASE WHEN p.ProductID IN (1, 2) THEN 29 WHEN p.ProductID = 3 THEN 28 ELSE 27 END,
+    N',"price":', CONVERT(nvarchar(20), p.UnitPrice),
+    N',"dimensions":{"lengthCm":', 80 + (p.ProductID % 30), N',"widthCm":', 20 + (p.ProductID % 10),
     N'}},"features":["weather-ready","serviceable","demo-seed"],"compatibility":{"terrainTags":["trail","all-weather"],"serviceIntervalsDays":[90,180]},"warranty":{"years":2,"transferable":false}}'
 );
+GO
+
+UPDATE p
+SET ProductMetadata = CONCAT(
+    N'{"terrain":"',
+    CASE p.ProductID WHEN 1 THEN N'rocky trails' WHEN 2 THEN N'alpine' WHEN 3 THEN N'gravel' ELSE N'mixed-surface' END,
+    N'","frame":"',
+    CASE p.ProductID WHEN 1 THEN N'aluminum' WHEN 2 THEN N'carbon' WHEN 3 THEN N'steel' ELSE N'alloy' END,
+    N'","product":{"id":', p.ProductID, N',"name":"', REPLACE(p.ProductName, N'"', N'\"'),
+    N'","sku":"', p.Sku, N'"},"specifications":{"wheelSize":',
+    CASE WHEN p.ProductID IN (1, 2) THEN 29 WHEN p.ProductID = 3 THEN 28 ELSE 27 END,
+    N',"price":', CONVERT(nvarchar(20), p.UnitPrice),
+    N',"dimensions":{"lengthCm":', 80 + (p.ProductID % 30), N',"widthCm":', 20 + (p.ProductID % 10),
+    N'}},"features":["weather-ready","serviceable","demo-seed"],"compatibility":{"terrainTags":["trail","all-weather"],"serviceIntervalsDays":[90,180]},"warranty":{"years":2,"transferable":false}}'
+)
+FROM catalog.Products AS p
+JOIN ops.BootstrapSeedRegistry AS ownership
+    ON ownership.SeedEntity = N'Product'
+   AND ownership.SeedID = p.ProductID;
 GO
 
 ;WITH e1(n) AS
@@ -555,6 +663,8 @@ numbers(n) AS
     FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
 )
 INSERT customer.Customers (CustomerID, CustomerName, Email, SalesRegion, Preferences)
+OUTPUT N'Customer', INSERTED.CustomerID, N'2.1.0-seed-ownership'
+    INTO ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
 SELECT
     6 + n,
     CONCAT(N'Demo Customer ', RIGHT(CONCAT(N'000', 6 + n), 3)),
@@ -568,16 +678,69 @@ WHERE NOT EXISTS (SELECT 1 FROM customer.Customers AS c WHERE c.CustomerID = 6 +
 SET IDENTITY_INSERT customer.Customers OFF;
 GO
 
-UPDATE customer.Customers
-SET Preferences = CONCAT(
-    N'{"newsletter":', CASE WHEN CustomerID % 2 = 0 THEN N'false' ELSE N'true' END,
-    N',"preferredCategory":"', CASE ((CustomerID - 1) % 10)
+INSERT ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
+SELECT N'Customer', c.CustomerID, N'2.1.0-seed-ownership'
+FROM customer.Customers AS c
+WHERE NOT EXISTS
+(
+    SELECT 1
+    FROM ops.BootstrapSeedRegistry AS ownership
+    WHERE ownership.SeedEntity = N'Customer'
+      AND ownership.SeedID = c.CustomerID
+)
+AND
+(
+    EXISTS
+    (
+        SELECT 1
+        FROM (VALUES
+            (1, N'Avery Chen', N'avery.chen@example.invalid', N'West'),
+            (2, N'Morgan Lee', N'morgan.lee@example.invalid', N'East'),
+            (3, N'Jordan Patel', N'jordan.patel@example.invalid', N'Central'),
+            (4, N'Riley Nguyen', N'riley.nguyen@example.invalid', N'North'),
+            (5, N'Casey Flores', N'casey.flores@example.invalid', N'South'),
+            (6, N'Devon Brooks', N'devon.brooks@example.invalid', N'West')
+        ) AS v(CustomerID, CustomerName, Email, SalesRegion)
+        WHERE v.CustomerID = c.CustomerID
+          AND v.CustomerName = c.CustomerName
+          AND v.Email = c.Email
+          AND v.SalesRegion = c.SalesRegion
+    )
+    OR
+    (
+        c.CustomerID BETWEEN 7 AND 120
+        AND c.CustomerName = CONCAT(N'Demo Customer ', RIGHT(CONCAT(N'000', c.CustomerID), 3))
+        AND c.Email = CONCAT(N'customer', RIGHT(CONCAT(N'000', c.CustomerID), 3), N'@example.invalid')
+        AND c.SalesRegion = CASE (c.CustomerID - 1) % 5
+            WHEN 0 THEN N'West' WHEN 1 THEN N'East' WHEN 2 THEN N'Central' WHEN 3 THEN N'North' ELSE N'South'
+        END
+    )
+)
+AND CONVERT(nvarchar(max), c.Preferences) = CONCAT(
+    N'{"newsletter":', CASE WHEN c.CustomerID % 2 = 0 THEN N'false' ELSE N'true' END,
+    N',"preferredCategory":"', CASE ((c.CustomerID - 1) % 10)
         WHEN 0 THEN N'Bikes' WHEN 1 THEN N'Components' WHEN 2 THEN N'Accessories' WHEN 3 THEN N'Clothing'
         WHEN 4 THEN N'Navigation' WHEN 5 THEN N'Maintenance' WHEN 6 THEN N'Safety' WHEN 7 THEN N'Training'
         WHEN 8 THEN N'Nutrition' ELSE N'Travel' END,
-    N'","profile":{"experience":"', CASE CustomerID % 3 WHEN 0 THEN N'advanced' WHEN 1 THEN N'beginner' ELSE N'intermediate' END,
-    N'","homeRegion":"', SalesRegion, N'"},"notifications":{"channels":["email","sms"],"quietHours":{"start":"21:00","end":"07:00"}},"savedSearches":["trail gear","seasonal offers"],"favoriteRideTypes":["trail","gravel"]}'
+    N'","profile":{"experience":"', CASE c.CustomerID % 3 WHEN 0 THEN N'advanced' WHEN 1 THEN N'beginner' ELSE N'intermediate' END,
+    N'","homeRegion":"', c.SalesRegion, N'"},"notifications":{"channels":["email","sms"],"quietHours":{"start":"21:00","end":"07:00"}},"savedSearches":["trail gear","seasonal offers"],"favoriteRideTypes":["trail","gravel"]}'
 );
+GO
+
+UPDATE c
+SET Preferences = CONCAT(
+    N'{"newsletter":', CASE WHEN c.CustomerID % 2 = 0 THEN N'false' ELSE N'true' END,
+    N',"preferredCategory":"', CASE ((c.CustomerID - 1) % 10)
+        WHEN 0 THEN N'Bikes' WHEN 1 THEN N'Components' WHEN 2 THEN N'Accessories' WHEN 3 THEN N'Clothing'
+        WHEN 4 THEN N'Navigation' WHEN 5 THEN N'Maintenance' WHEN 6 THEN N'Safety' WHEN 7 THEN N'Training'
+        WHEN 8 THEN N'Nutrition' ELSE N'Travel' END,
+    N'","profile":{"experience":"', CASE c.CustomerID % 3 WHEN 0 THEN N'advanced' WHEN 1 THEN N'beginner' ELSE N'intermediate' END,
+    N'","homeRegion":"', c.SalesRegion, N'"},"notifications":{"channels":["email","sms"],"quietHours":{"start":"21:00","end":"07:00"}},"savedSearches":["trail gear","seasonal offers"],"favoriteRideTypes":["trail","gravel"]}'
+)
+FROM customer.Customers AS c
+JOIN ops.BootstrapSeedRegistry AS ownership
+    ON ownership.SeedEntity = N'Customer'
+   AND ownership.SeedID = c.CustomerID;
 GO
 
 SET IDENTITY_INSERT sales.Orders ON;
@@ -591,6 +754,8 @@ numbers(n) AS
     FROM e1 AS a CROSS JOIN e1 AS b CROSS JOIN e1 AS c
 )
 INSERT sales.Orders (OrderID, CustomerID, OrderDate, OrderStatus, ShippingMetadata)
+OUTPUT N'Order', INSERTED.OrderID, N'2.1.0-seed-ownership'
+    INTO ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
 SELECT
     6 + n,
     ((6 + n - 1) % 120) + 1,
@@ -604,19 +769,59 @@ WHERE NOT EXISTS (SELECT 1 FROM sales.Orders AS o WHERE o.OrderID = 6 + numbers.
 SET IDENTITY_INSERT sales.Orders OFF;
 GO
 
-UPDATE sales.Orders
-SET ShippingMetadata = CONCAT(
-    N'{"carrier":"', CASE WHEN OrderID % 2 = 0 THEN N'TrailExpress' ELSE N'RidgeLogistics' END,
-    N'","priority":"', CASE WHEN OrderID % 4 = 0 THEN N'express' ELSE N'standard' END,
-    N'","tracking":{"number":"AG', RIGHT(CONCAT(N'000000', OrderID), 6),
+INSERT ops.BootstrapSeedRegistry (SeedEntity, SeedID, SeedVersion)
+SELECT N'Order', o.OrderID, N'2.1.0-seed-ownership'
+FROM sales.Orders AS o
+WHERE NOT EXISTS
+(
+    SELECT 1
+    FROM ops.BootstrapSeedRegistry AS ownership
+    WHERE ownership.SeedEntity = N'Order'
+      AND ownership.SeedID = o.OrderID
+)
+AND
+(
+    /* Orders 1-6 originally use SYSUTCDATETIME(), so a legacy row cannot
+       prove its original timestamp. New installations record them via OUTPUT;
+       legacy migration accepts only the fully deterministic expanded range. */
+    o.OrderID BETWEEN 7 AND 800
+    AND o.CustomerID = ((o.OrderID - 1) % 120) + 1
+    AND o.OrderDate = DATEADD(day, -(o.OrderID % 365), CONVERT(datetime2(0), N'2026-01-01T12:00:00'))
+    AND o.OrderStatus = CASE o.OrderID % 5
+        WHEN 0 THEN N'Pending' WHEN 1 THEN N'Processing' WHEN 2 THEN N'Shipped' WHEN 3 THEN N'Delivered' ELSE N'Cancelled'
+    END
+)
+AND CONVERT(nvarchar(max), o.ShippingMetadata) = CONCAT(
+    N'{"carrier":"', CASE WHEN o.OrderID % 2 = 0 THEN N'TrailExpress' ELSE N'RidgeLogistics' END,
+    N'","priority":"', CASE WHEN o.OrderID % 4 = 0 THEN N'express' ELSE N'standard' END,
+    N'","tracking":{"number":"AG', RIGHT(CONCAT(N'000000', o.OrderID), 6),
     N'","events":[{"status":"label-created","at":"2025-12-01T08:00:00Z"},{"status":"',
-    CASE WHEN OrderStatus IN (N'Delivered', N'Shipped') THEN N'in-transit' ELSE N'pending' END,
+    CASE WHEN o.OrderStatus IN (N'Delivered', N'Shipped') THEN N'in-transit' ELSE N'pending' END,
     N'","at":"2025-12-02T08:00:00Z"}]},"destination":{"region":"',
-    CASE (CustomerID - 1) % 5 WHEN 0 THEN N'West' WHEN 1 THEN N'East' WHEN 2 THEN N'Central' WHEN 3 THEN N'North' ELSE N'South' END,
+    CASE (o.CustomerID - 1) % 5 WHEN 0 THEN N'West' WHEN 1 THEN N'East' WHEN 2 THEN N'Central' WHEN 3 THEN N'North' ELSE N'South' END,
     N'","deliveryInstructions":["leave at secure location","send delivery notification"]},"parcels":[{"sequence":1,"weightKg":',
-    CONVERT(nvarchar(20), CONVERT(decimal(4, 1), 1.0 + ((OrderID % 20) * 0.2))),
+    CONVERT(nvarchar(20), CONVERT(decimal(4,1), 1.0 + ((o.OrderID % 20) * 0.2))),
     N',"dimensionsCm":{"length":30,"width":20,"height":12}}]}'
 );
+GO
+
+UPDATE o
+SET ShippingMetadata = CONCAT(
+    N'{"carrier":"', CASE WHEN o.OrderID % 2 = 0 THEN N'TrailExpress' ELSE N'RidgeLogistics' END,
+    N'","priority":"', CASE WHEN o.OrderID % 4 = 0 THEN N'express' ELSE N'standard' END,
+    N'","tracking":{"number":"AG', RIGHT(CONCAT(N'000000', o.OrderID), 6),
+    N'","events":[{"status":"label-created","at":"2025-12-01T08:00:00Z"},{"status":"',
+    CASE WHEN o.OrderStatus IN (N'Delivered', N'Shipped') THEN N'in-transit' ELSE N'pending' END,
+    N'","at":"2025-12-02T08:00:00Z"}]},"destination":{"region":"',
+    CASE (o.CustomerID - 1) % 5 WHEN 0 THEN N'West' WHEN 1 THEN N'East' WHEN 2 THEN N'Central' WHEN 3 THEN N'North' ELSE N'South' END,
+    N'","deliveryInstructions":["leave at secure location","send delivery notification"]},"parcels":[{"sequence":1,"weightKg":',
+    CONVERT(nvarchar(20), CONVERT(decimal(4, 1), 1.0 + ((o.OrderID % 20) * 0.2))),
+    N',"dimensionsCm":{"length":30,"width":20,"height":12}}]}'
+)
+FROM sales.Orders AS o
+JOIN ops.BootstrapSeedRegistry AS ownership
+    ON ownership.SeedEntity = N'Order'
+   AND ownership.SeedID = o.OrderID;
 GO
 
 INSERT sales.OrderItems (OrderID, ProductID, Quantity, UnitPrice)

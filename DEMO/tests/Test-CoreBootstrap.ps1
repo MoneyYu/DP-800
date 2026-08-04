@@ -103,8 +103,14 @@ Assert-Present -Text $initText -Pattern '(?i)(compatibility_level|@compatibility
 Assert-Present -Text $initText -Pattern '(?i)ALTER\s+TABLE\s+catalog\.Products\s+ALTER\s+COLUMN\s+ProductMetadata\s+json' -Message '01-initialize must upgrade legacy ProductMetadata to native json.'
 Assert-Present -Text $initText -Pattern '(?i)ALTER\s+TABLE\s+customer\.Customers\s+ALTER\s+COLUMN\s+Preferences\s+json' -Message '01-initialize must upgrade legacy Preferences to native json.'
 Assert-Present -Text $initText -Pattern '(?i)ALTER\s+TABLE\s+sales\.Orders\s+ALTER\s+COLUMN\s+ShippingMetadata\s+json' -Message '01-initialize must upgrade legacy ShippingMetadata to native json.'
-Assert-Present -Text $initText -Pattern '(?i)SchemaVersion.*2\.0\.0-json170' -Message '01-initialize must record the native-json schema version.'
+Assert-Present -Text $initText -Pattern '(?i)SchemaVersion.*2\.1\.0-json170-seedownership' -Message '01-initialize must record the native-json seed-ownership schema version.'
 Assert-Present -Text $initText -Pattern '(?i)CK_ProductReviews_Rating\s+CHECK\s*\(Rating\s+BETWEEN\s+1\s+AND\s+5\)' -Message 'customer.ProductReviews must constrain Rating 1-5.'
+
+# Bootstrap may enrich only rows whose deterministic ownership is recorded.
+Assert-Present -Text $initText -Pattern '(?i)CREATE\s+TABLE\s+ops\.BootstrapSeedRegistry' -Message '01-initialize must create the bootstrap seed ownership registry.'
+Assert-Present -Text $initText -Pattern '(?i)PK_BootstrapSeedRegistry\s+PRIMARY\s+KEY' -Message 'The bootstrap seed ownership registry must have a primary key.'
+Assert-Present -Text $initText -Pattern '(?i)SeedVersion' -Message 'The bootstrap seed ownership registry must record its seed version.'
+Assert-Present -Text $initText -Pattern '(?i)JOIN\s+ops\.BootstrapSeedRegistry\s+AS\s+ownership' -Message 'JSON enrichment must join the bootstrap seed ownership registry.'
 
 # Module state seed covers all eleven modules.
 Assert-Present -Text $initText -Pattern '(?i)INSERT\s+ops\.DemoModuleState' -Message '01-initialize must seed ops.DemoModuleState.'

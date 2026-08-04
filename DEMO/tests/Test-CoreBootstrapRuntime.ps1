@@ -90,6 +90,7 @@ $expectedCounts = [ordered]@{
     'sales.OrderItems'       = 2400
     'ops.DemoModuleState'    = 11
     'ops.DemoEnvironment'    = 1
+    'ops.BootstrapSeedRegistry' = 1070
 }
 
 $originalPassword = [Environment]::GetEnvironmentVariable('SQLCMDPASSWORD', 'Process')
@@ -125,7 +126,7 @@ try {
     $markerDb = Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT DatabaseName FROM ops.DemoEnvironment WHERE DemoEnvironmentID = 1;"
     if ($markerDb -ne 'AdventureGearAI') { Add-Failure "ops.DemoEnvironment marker DatabaseName is '$markerDb'." }
     $markerVersion = Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT SchemaVersion FROM ops.DemoEnvironment WHERE DemoEnvironmentID = 1;"
-    if ($markerVersion -ne '2.0.0-json170') { Add-Failure "ops.DemoEnvironment marker SchemaVersion is '$markerVersion' (expected '2.0.0-json170')." }
+    if ($markerVersion -ne '2.1.0-json170-seedownership') { Add-Failure "ops.DemoEnvironment marker SchemaVersion is '$markerVersion' (expected '2.1.0-json170-seedownership')." }
 
     # Module state structure: 11 rows numbered 1..11, all NotStarted with generated ModuleName.
     $moduleRange = Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT CONCAT(MIN(ModuleNumber), '-', MAX(ModuleNumber), '-', COUNT(*)) FROM ops.DemoModuleState;"
@@ -172,6 +173,93 @@ SELECT CONCAT(
     if ($canonicalRows -ne 'Trailblazer 29 Bike|Puncture Guard Tire|Jordan Patel') {
         Add-Failure "Canonical seed rows changed: '$canonicalRows'."
     }
+
+    # User-created rows receive adjacent identities, but are not bootstrap-owned.
+    # A rerun must retain their native json documents exactly while enriching
+    # only the deterministic records recorded in the ownership registry.
+    Invoke-Query -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+DECLARE @ProductID int;
+DECLARE @CustomerID int;
+INSERT catalog.Products (CategoryID, ProductName, Sku, UnitPrice, ProductMetadata)
+VALUES (1, N'Custom bootstrap preservation product', N'CUSTOM-JSON-PRESERVE', 77.77,
+        JSON_OBJECT(N'owner': N'custom', N'tags': JSON_QUERY(JSON_ARRAY(N'do-not-overwrite')), N'revision': 1));
+SET @ProductID = CONVERT(int, SCOPE_IDENTITY());
+INSERT customer.Customers (CustomerName, Email, SalesRegion, Preferences)
+VALUES (N'Custom bootstrap preservation customer', N'custom-json-preserve@example.invalid', N'West',
+        JSON_OBJECT(N'owner': N'custom', N'channels': JSON_QUERY(JSON_ARRAY(N'none')), N'revision': 2));
+SET @CustomerID = CONVERT(int, SCOPE_IDENTITY());
+INSERT sales.Orders (CustomerID, OrderStatus, ShippingMetadata)
+VALUES (@CustomerID, N'Pending',
+        JSON_OBJECT(N'owner': N'custom', N'instructions': JSON_QUERY(JSON_ARRAY(N'do-not-overwrite')), N'revision': 3));
+SELECT CONCAT(@ProductID, N'|', @CustomerID, N'|', CONVERT(int, SCOPE_IDENTITY()));
+"@ | Out-Null
+
+$customJsonBefore = Get-Scalar -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT CONVERT(nvarchar(max), ProductMetadata) FROM catalog.Products WHERE Sku = N'CUSTOM-JSON-PRESERVE'), N'|',
+    (SELECT CONVERT(nvarchar(max), Preferences) FROM customer.Customers WHERE Email = N'custom-json-preserve@example.invalid'), N'|',
+    (SELECT CONVERT(nvarchar(max), o.ShippingMetadata)
+     FROM sales.Orders AS o
+     JOIN customer.Customers AS c ON c.CustomerID = o.CustomerID
+     WHERE c.Email = N'custom-json-preserve@example.invalid')
+);
+"@
+
+    & pwsh -NoProfile -File $bootstrapScript -Server $Server -User $User | Out-Null
+    if ($LASTEXITCODE -ne 0) { Add-Failure 'Custom-data preservation bootstrap rerun exited non-zero.' }
+
+    $customJson = Get-Scalar -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT CONVERT(nvarchar(max), ProductMetadata) FROM catalog.Products WHERE Sku = N'CUSTOM-JSON-PRESERVE'), N'|',
+    (SELECT CONVERT(nvarchar(max), Preferences) FROM customer.Customers WHERE Email = N'custom-json-preserve@example.invalid'), N'|',
+    (SELECT CONVERT(nvarchar(max), o.ShippingMetadata)
+     FROM sales.Orders AS o
+     JOIN customer.Customers AS c ON c.CustomerID = o.CustomerID
+     WHERE c.Email = N'custom-json-preserve@example.invalid')
+);
+"@
+    if ([string]::IsNullOrWhiteSpace($customJsonBefore) -or $customJson -ne $customJsonBefore) {
+        Add-Failure "Bootstrap rerun changed custom native json documents: '$customJson'."
+    }
+
+    $customCounts = [ordered]@{
+        'catalog.Products' = 151
+        'customer.Customers' = 121
+        'sales.Orders' = 801
+    }
+    foreach ($table in $customCounts.Keys) {
+        $actual = [int](Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT COUNT(*) FROM $table;")
+        if ($actual -ne $customCounts[$table]) {
+            Add-Failure "After custom-data rerun, row count for $table is $actual (expected $($customCounts[$table]))."
+        }
+    }
+
+    # Simulate an upgrade from the pre-registry bootstrap. A modified expanded
+    # order must not be claimed merely because its ID/customer/status match.
+    Invoke-Query -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+DELETE FROM ops.BootstrapSeedRegistry;
+UPDATE sales.Orders
+SET OrderDate = CONVERT(datetime2(0), N'2001-01-01T00:00:00')
+WHERE OrderID = 7;
+"@ | Out-Null
+    & pwsh -NoProfile -File $bootstrapScript -Server $Server -User $User | Out-Null
+    if ($LASTEXITCODE -ne 0) { Add-Failure 'Legacy ownership-migration bootstrap rerun exited non-zero.' }
+
+    $migrationOwnership = Get-Scalar -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT COUNT(*) FROM ops.BootstrapSeedRegistry), N'|',
+    (SELECT COUNT(*) FROM ops.BootstrapSeedRegistry WHERE SeedEntity = N'Order' AND SeedID = 7)
+);
+"@
+    if ($migrationOwnership -ne '1063|0') {
+        Add-Failure "Legacy ownership migration claimed an unproven order or recorded the wrong count: '$migrationOwnership'."
+    }
+    $customCounts['ops.BootstrapSeedRegistry'] = 1063
 
     # 4) Recreate the exact former nvarchar/check-constraint state, then prove
     # the bootstrap performs an in-place native-json migration without touching
@@ -220,8 +308,9 @@ if ($legacyJsonColumns -ne 0) {
 
     foreach ($table in $expectedCounts.Keys) {
         $actual = [int](Get-Scalar -Database 'AdventureGearAI' -Query "SET NOCOUNT ON; SELECT COUNT(*) FROM $table;")
-        if ($actual -ne $expectedCounts[$table]) {
-            Add-Failure "After rerun, row count for $table is $actual (expected $($expectedCounts[$table])); bootstrap is not idempotent."
+        $expected = if ($customCounts.Contains($table)) { $customCounts[$table] } else { $expectedCounts[$table] }
+        if ($actual -ne $expected) {
+            Add-Failure "After rerun, row count for $table is $actual (expected $expected); bootstrap is not idempotent."
         }
     }
 
