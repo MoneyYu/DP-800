@@ -96,10 +96,31 @@ $moduleSignature = @{
 
 function Assert-CoreIntact {
     param([string]$Context)
-    $checks = @{ 'catalog.Categories' = 5; 'catalog.Products' = 12; 'catalog.Inventory' = 12; 'customer.Customers' = 6; 'customer.ProductReviews' = 14; 'sales.Orders' = 6; 'sales.OrderItems' = 13 }
+    $checks = [ordered]@{
+        'catalog.Categories'      = 10
+        'catalog.Products'        = 150
+        'catalog.Inventory'       = 150
+        'customer.Customers'      = 120
+        'customer.ProductReviews' = 500
+        'sales.Orders'            = 800
+        'sales.OrderItems'        = 2400
+        'ops.DemoModuleState'     = 11
+        'ops.DemoEnvironment'     = 1
+    }
     foreach ($t in $checks.Keys) {
         $c = Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM $t;"
         if ($c -ne $checks[$t]) { Add-Failure "[$Context] canonical core $t count is $c (expected $($checks[$t]))." }
+    }
+    $canonicalRows = Get-Scalar -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 1), N'|',
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 4), N'|',
+    (SELECT CustomerName FROM customer.Customers WHERE CustomerID = 3)
+);
+"@
+    if ($canonicalRows -ne 'Trailblazer 29 Bike|Puncture Guard Tire|Jordan Patel') {
+        Add-Failure "[$Context] canonical seed rows changed: '$canonicalRows'."
     }
     if ((Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM ops.DemoEnvironment WHERE DemoEnvironmentID=1 AND DatabaseName=N'AdventureGearAI';") -ne 1) {
         Add-Failure "[$Context] ops.DemoEnvironment marker row is missing."
@@ -127,6 +148,17 @@ try {
     foreach ($m in 1..11) { Assert-Status -Module $m -Expected 'Completed' }
     foreach ($m in $moduleSignature.Keys) { Assert-Present -Object $moduleSignature[$m] }
     Assert-CoreIntact -Context 'after provisioning'
+
+    # M08 can leave its owned CDC capture active while M01 is force-reapplied.
+    # M01 must safely coordinate that lifecycle before replacing its XTP table.
+    $forceM01 = Invoke-Runner -Modules @(1) -Force
+    if ($forceM01.ExitCode -ne 0) { Add-Failure "Forced M01 reapply with M08 CDC exited non-zero. Output: $($forceM01.Output)" }
+    Assert-Present -Object 'catalog.ProductCacheInMemory'
+    Assert-Status -Module 1 -Expected 'Completed'
+    Assert-Status -Module 8 -Expected 'NotStarted'
+    $reapply8 = Invoke-Runner -Modules @(8)
+    if ($reapply8.ExitCode -ne 0) { Add-Failure "Reapply M08 after forced M01 reapply exited non-zero. Output: $($reapply8.Output)" }
+    Assert-Status -Module 8 -Expected 'Completed'
 
     # --- Phase 2: M10 reset marks M11 stale; M09 stays Completed -------------
     $r10 = Invoke-ModuleReset -Module 10
@@ -165,21 +197,99 @@ try {
     foreach ($m in 9, 10, 11) { Assert-Status -Module $m -Expected 'Completed' }
 
     # --- Phase 4: M01 reset cascades staleness to M02..M11 ------------------
+    # The runner records Running before its four M01 setup/inspection scripts.
+    # A scoped reset must refuse that state so it cannot remove the temporal and
+    # native JSON objects between scripts.
+    Invoke-Query -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+UPDATE ops.DemoModuleState
+SET Status = N'Running',
+    StartedAtUtc = SYSUTCDATETIME(),
+    CompletedAtUtc = NULL,
+    LastError = NULL,
+    ErrorNumber = NULL,
+    ErrorLine = NULL,
+    UpdatedAtUtc = SYSUTCDATETIME()
+WHERE ModuleNumber = 1;
+"@ | Out-Null
+    $runningM01Reset = Invoke-ModuleReset -Module 1
+    if ($runningM01Reset.ExitCode -eq 0) {
+        Add-Failure "M01 reset must refuse while its runner lifecycle is Running. Output: $($runningM01Reset.Output)"
+    }
+    if ($runningM01Reset.Output -notmatch 'M01 reset refused while Module 1 is Running') {
+        Add-Failure "M01 Running-state reset refusal was not explicit. Output: $($runningM01Reset.Output)"
+    }
+    Assert-Status -Module 1 -Expected 'Running'
+    Assert-Present -Object 'catalog.ProductPrice'
+    Assert-Present -Object 'catalog.ProductJsonTeaching'
+    Invoke-Query -Database 'AdventureGearAI' -Query @"
+SET NOCOUNT ON;
+UPDATE ops.DemoModuleState
+SET Status = N'Completed',
+    CompletedAtUtc = SYSUTCDATETIME(),
+    LastError = NULL,
+    ErrorNumber = NULL,
+    ErrorLine = NULL,
+    UpdatedAtUtc = SYSUTCDATETIME()
+WHERE ModuleNumber = 1;
+"@ | Out-Null
+
     $r1 = Invoke-ModuleReset -Module 1
     if ($r1.ExitCode -ne 0) { Add-Failure "M01 reset exited non-zero. Output: $($r1.Output)" }
     Assert-Absent -Object 'catalog.ProductPrice'
     Assert-Absent -Object 'sales.PartitionedOrders'
+    Assert-Absent -Object 'catalog.ProductJsonTeaching'
+    Assert-Absent -Object 'ops.InventoryLedger'
+    Assert-Absent -Object 'catalog.ProductSkuSequenceDemo'
+    Assert-Absent -Object 'catalog.ProductConstraintParent'
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsXTPSupported'));") -eq 1) {
+        Assert-Absent -Object 'catalog.ProductCacheInMemory'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsPolyBaseInstalled'));") -eq 1) {
+        Assert-Absent -Object 'catalog.ProductMetadataExternal'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.Products') AND name = N'IX_Products_ProductMetadata';") -ne 0) {
+        Add-Failure 'M01 reset must drop the native JSON index IX_Products_ProductMetadata.'
+    }
     if ((Get-Int "SET NOCOUNT ON; SELECT CASE WHEN COL_LENGTH('catalog.Products','MetadataFrame') IS NOT NULL THEN 1 ELSE 0 END;") -ne 0) { Add-Failure 'M01 reset must drop the catalog.Products.MetadataFrame computed column.' }
     foreach ($m in 2..11) { Assert-Status -Module $m -Expected 'NotStarted' }
     Assert-Status -Module 1 -Expected 'NotStarted'
-    # Dependent objects are only marked stale, not physically dropped by M01 reset.
+    # M01 owns only its listed physical objects. The dependent module states are
+    # stale, but their independently owned objects remain until their resets.
+    foreach ($m in @($moduleSignature.Keys | Where-Object { $_ -ne 1 })) {
+        Assert-Present -Object $moduleSignature[$m]
+    }
     if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.PerformanceOrders;') -ne 10000) { Add-Failure 'M01 reset must not drop the M06 workload (only mark it stale).' }
-    if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') -ne 6) { Add-Failure 'M01 reset must not drop the M05 companion table (only mark it stale).' }
+    if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') -ne 120) { Add-Failure 'M01 reset must not drop the 120-row M05 companion table (only mark it stale).' }
     Assert-CoreIntact -Context 'after M01 reset'
-    # Reapply M01 and representative dependents.
+    # Regression sequence: full modules -> M01 reset -> M01 reapply -> AI
+    # reapply -> reverse teardowns. Reapply must restore every M01 object that
+    # a normal module-owned M08 CDC lifecycle permits.
     $reapply1 = Invoke-Runner -Modules @(1)
     if ($reapply1.ExitCode -ne 0) { Add-Failure "Reapply M01 exited non-zero. Output: $($reapply1.Output)" }
     Assert-Present -Object 'catalog.ProductPrice'
+    Assert-Present -Object 'sales.PartitionedOrders'
+    Assert-Present -Object 'catalog.ProductNode'
+    Assert-Present -Object 'catalog.ProductRelatedTo'
+    Assert-Present -Object 'catalog.ProductJsonTeaching'
+    Assert-Present -Object 'ops.InventoryLedger'
+    Assert-Present -Object 'catalog.ProductSkuSequenceDemo'
+    Assert-Present -Object 'catalog.ProductConstraintParent'
+    if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductPrice;') -ne 150) {
+        Add-Failure 'M01 reapply must restore all 150 temporal ProductPrice rows.'
+    }
+    if ((Get-Scalar -Query "SET NOCOUNT ON; SELECT JSON_VALUE(Payload, '$.lesson') FROM catalog.ProductJsonTeaching WHERE ProductJsonTeachingID = 1;") -ne 'M01-safe-modified') {
+        Add-Failure 'M01 reapply must restore the native JSON teaching row.'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsXTPSupported'));") -eq 1) {
+        Assert-Present -Object 'catalog.ProductCacheInMemory'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT CONVERT(int, SERVERPROPERTY('IsPolyBaseInstalled'));") -eq 1) {
+        Assert-Present -Object 'catalog.ProductMetadataExternal'
+    }
+    if ((Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.json_indexes WHERE object_id = OBJECT_ID(N'catalog.Products') AND name = N'IX_Products_ProductMetadata';") -ne 1) {
+        Add-Failure 'M01 reapply must recreate the native JSON index IX_Products_ProductMetadata.'
+    }
     Assert-Status -Module 1 -Expected 'Completed'
     $reapply2 = Invoke-Runner -Modules @(2)
     if ($reapply2.ExitCode -ne 0) { Add-Failure "Reapply M02 exited non-zero. Output: $($reapply2.Output)" }

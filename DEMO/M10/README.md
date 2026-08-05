@@ -14,8 +14,13 @@ The runner executes `common/01-search-data.sql` (which builds
 DiskANN meets its minimum vector count) and then `local/01-search.sql`.
 
 Full-text installation and vector syntax are detected independently. The local
-script performs full-text search, EXACT vector search (`VECTOR_DISTANCE`), and
+script performs `CONTAINS` and `FREETEXT` full-text search, EXACT vector search (`VECTOR_DISTANCE`), and
 hybrid Reciprocal Rank Fusion, emitting the actual skip reason for anything the
 installed build does not support. The Azure path (`azure/01-ann-search.sql`) adds
 the DiskANN vector index and uses the current `SELECT TOP (...) WITH APPROXIMATE`
 query syntax because preview/GA behavior can differ from local SQL Server 2025.
+
+`FREETEXT` runs only when Full-Text Search is installed. Use the
+[custom FTS/PolyBase Docker image](../docker/README.md) for the local
+full-text and PolyBase demonstrations; the standard image reports the
+feature-detected skip instead.

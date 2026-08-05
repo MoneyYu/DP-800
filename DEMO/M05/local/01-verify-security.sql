@@ -21,11 +21,12 @@ SELECT
 FROM sys.databases AS d
 WHERE d.name = DB_NAME();
 
-/* Dynamic Data Masking: the masked reader sees masked email/GovernmentID/CreditLimit.
-    * 遮罩讀取者會看到已遮罩的電子郵件、GovernmentID 與 CreditLimit。
+/* Dynamic Data Masking: the masked reader sees masked email/GovernmentID/
+   CreditLimit/PrivateNote. PrivateNote demonstrates the fourth default() mask.
+    * 遮罩讀取者會看到已遮罩的電子郵件、GovernmentID、CreditLimit 與 PrivateNote；PrivateNote 示範第四種 default() 遮罩。
 */
 EXECUTE AS USER = N'AdventureGearMaskedReader';
-SELECT CustomerName, Email, GovernmentID, CreditLimit, SalesRegion
+SELECT CustomerName, Email, GovernmentID, CreditLimit, PrivateNote AS DefaultMaskedValue, SalesRegion
 FROM security.SecureCustomers
 ORDER BY CustomerID;
 REVERT;
@@ -34,9 +35,25 @@ REVERT;
     * West 讀取者只能看到 West 區域客戶。
 */
 EXECUTE AS USER = N'AdventureGearWestReader';
-SELECT CustomerName, Email, GovernmentID, CreditLimit, SalesRegion
+SELECT CustomerName, Email, GovernmentID, CreditLimit, PrivateNote AS DefaultMaskedValue, SalesRegion
 FROM security.SecureCustomers
 ORDER BY CustomerID;
+REVERT;
+
+/* Object-level GRANT EXECUTE succeeds, while the explicit DENY SELECT remains
+   effective for the same contained user.
+   * 物件層級的 GRANT EXECUTE 會成功，而相同內含使用者的 DENY SELECT 仍會生效。
+*/
+EXECUTE AS USER = N'AdventureGearPermissionReader';
+EXEC security.usp_GetSecureCustomer @CustomerID = 1;
+BEGIN TRY
+    SELECT TOP (1) CustomerID
+    FROM security.SecureCustomers;
+    SELECT N'DENY was not applied.' AS ObjectPermissionResult;
+END TRY
+BEGIN CATCH
+    SELECT N'Direct SELECT denied as expected.' AS ObjectPermissionResult;
+END CATCH;
 REVERT;
 
 /* Always Encrypted is a client-driver capability, not server-side T-SQL.

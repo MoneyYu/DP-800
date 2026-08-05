@@ -50,6 +50,14 @@ BEGIN
             ''FORMSOF(INFLECTIONAL, ride) OR "puncture*"'') AS keywordResult
         INNER JOIN search.SearchDocuments AS d ON d.DocumentID = keywordResult.[KEY]
         ORDER BY keywordResult.[RANK] DESC;';
+
+    EXEC sys.sp_executesql N'
+        SELECT TOP (10)
+            d.ProductName,
+            d.DocumentText
+        FROM search.SearchDocuments AS d
+        WHERE FREETEXT((ProductName, DocumentText), N''puncture resistant tire'')
+        ORDER BY d.Rating DESC, d.DocumentID;';
 END;
 
 BEGIN TRY

@@ -8,6 +8,12 @@
 pwsh -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 9
 ```
 
-執行器會執行 `common/01-review-data.sql`（它從 `customer.ProductReviews` 與 `catalog.Products` 的聯結建立 `ai.EmbeddingDocuments`），接著執行 `local/01-feature-detection.sql`。
+執行器會執行 `common/01-review-data.sql`（它從 `customer.ProductReviews` 與
+`catalog.Products` 的聯結建立 `ai.EmbeddingDocuments` 和持續保存的
+`ai.EmbeddingChunks`），接著執行 `local/01-feature-detection.sql`。
 
 本機指令碼會記錄實際的引擎／版本，並測試是否可使用 `vector` 型別。`local/01-feature-detection.sql` 只會探測 `sys.external_models`；由於存放庫沒有已核准的端點或認證，本機會略過外部模型建立與 `AI_GENERATE_EMBEDDINGS`。`azure/01-external-model.sql` 是受控識別範本（`AdventureGearEmbeddingModel`）；請在執行時提供 SQLCMD 變數及已核准的端點，絕不可認可金鑰、權杖、租用戶 ID 或物件 ID。
+
+在 compatibility level 170 或更新版本，`AI_GENERATE_CHUNKS` 會建立 fixed-size chunks，
+並保留來源 product/review provenance、順序、offset、length 與 chunk-set identifiers。
+低於該 compatibility level 時，指令碼會如實回報 skip，而不會宣稱已執行 chunk generation。

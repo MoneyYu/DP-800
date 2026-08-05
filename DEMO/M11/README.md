@@ -14,7 +14,10 @@ The runner resolves the dependency chain (M01 → M09 → M10 → M11), so
 grounding context from `search.SearchDocuments`) and then
 `local/01-build-prompt.sql`.
 
-The local path demonstrates retrieval, JSON context, and prompt construction.
+The local path demonstrates retrieval, a native JSON nested grounding context,
+and prompt construction. It uses `FOR JSON PATH, WITHOUT_ARRAY_WRAPPER` for the
+single grounded product, preserving `ProductMetadata` as nested JSON rather than
+an escaped string.
 SQL Server 2025 can expose `sp_invoke_external_rest_endpoint`, so the procedure
 reports whether it exists; generation is still skipped unless an approved
 endpoint and database scoped credential are configured. `azure/01-rag-procedure.sql`

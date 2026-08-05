@@ -20,11 +20,24 @@ pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 5
 
 ## 示範內容
 
-- 受保護投影上的 Dynamic Data Masking（`email()`、`partial`、`random`）。
+- 受保護投影上的 Dynamic Data Masking（`default()`、`email()`、`partial`、`random`）。
 - 透過 `security.fn_RegionFilter` + `security.CustomerRegionPolicy` 實作的
   Row-Level Security。
+- 模組示範使用者的物件層級 `GRANT` 與 `DENY` 權限。
 - TDE 檢查（`sys.databases.is_encrypted`）。
 - Always Encrypted 用戶端驅動程式界限（說明其行為，但不偽造伺服器端實作）。
 
 TDE 憑證/金鑰生命週期因平台而異，不會以硬式編碼的主要金鑰密碼自動處理。
-DDM 不是加密界限；具權限的使用者仍能看到未遮罩值。請參閱 `azure/README.md`。
+DDM 不是加密界限；具權限的使用者仍能看到未遮罩值。
+
+## 手動 TDE 示範（不由執行器執行）
+
+`local/02-tde-demo.sql` 需要既有的 master database master key。它只會建立、加密、
+驗證及移除自己擁有的暫存 `DP800_M05_TdeDemo` 資料庫與憑證（這不是舊版 `DP800_Mxx` 的
+手動清理候選資料庫）；絕不會加密 AdventureGearAI。請先確認先決條件，然後才執行：
+
+```powershell
+pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M05/local/02-tde-demo.sql
+```
+
+平台差異請參閱 `azure/README.md`。

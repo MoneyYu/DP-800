@@ -55,6 +55,20 @@ Training key: `E9C6FD76A9443435`
 
 [CREATE PARTITION FUNCTION (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-partition-function-transact-sql?view=sql-server-ver17)
 
+[JSON data type (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/data-types/json-data-type?view=sql-server-ver17)
+
+[CREATE JSON INDEX (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-json-index-transact-sql?view=sql-server-ver17)
+
+[JSON data in SQL Server](https://learn.microsoft.com/en-us/sql/relational-databases/json/json-data-sql-server?view=sql-server-ver17)
+
+[CREATE SEQUENCE (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-sequence-transact-sql?view=sql-server-ver17)
+
+[Introduction to memory-optimized tables](https://learn.microsoft.com/en-us/sql/relational-databases/in-memory-oltp/introduction-to-memory-optimized-tables?view=sql-server-ver17)
+
+[Create an updatable ledger table](https://learn.microsoft.com/en-us/sql/relational-databases/security/ledger/ledger-how-to-updatable-ledger-tables?view=sql-server-ver17)
+
+[CREATE EXTERNAL TABLE (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-external-table-transact-sql?view=sql-server-ver17)
+
 #### M02 - Implement programmability objects with SQL
 [DML Triggers](https://learn.microsoft.com/en-us/sql/relational-databases/triggers/dml-triggers?view=sql-server-ver17)
 
@@ -73,6 +87,16 @@ Training key: `E9C6FD76A9443435`
 
 [WITH common_table_expression (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/queries/with-common-table-expression-transact-sql?view=sql-server-ver17)
 
+[OPENJSON (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/openjson-transact-sql?view=sql-server-ver17)
+
+[Format query results as JSON with FOR JSON](https://learn.microsoft.com/en-us/sql/relational-databases/json/format-query-results-as-json-with-for-json-sql-server?view=sql-server-ver17)
+
+[REGEXP_LIKE (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/regexp-like-transact-sql?view=sql-server-ver17)
+
+[SOUNDEX (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/soundex-transact-sql?view=sql-server-ver17)
+
+[JSON_CONTAINS (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/json-contains-transact-sql?view=sql-server-ver17)
+
 #### M04 - Implement SQL solutions by using AI-assisted tools
 [GitHub Copilot in SQL Server Management Studio](https://learn.microsoft.com/en-us/ssms/github-copilot/overview)
 
@@ -90,6 +114,12 @@ Training key: `E9C6FD76A9443435`
 
 [Microsoft Entra authentication for Azure SQL](https://learn.microsoft.com/en-us/azure/azure-sql/database/authentication-aad-overview?view=azuresql)
 
+[Transparent Data Encryption](https://learn.microsoft.com/en-us/sql/relational-databases/security/encryption/transparent-data-encryption?view=sql-server-ver17)
+
+[SQL Server Audit](https://learn.microsoft.com/en-us/sql/relational-databases/security/auditing/sql-server-audit-database-engine?view=sql-server-ver17)
+
+[GRANT object permissions](https://learn.microsoft.com/en-us/sql/t-sql/statements/grant-object-permissions-transact-sql?view=sql-server-ver17)
+
 #### M06 - Optimize database performance
 [Monitor performance by using the Query Store](https://learn.microsoft.com/en-us/sql/relational-databases/performance/monitoring-performance-by-using-the-query-store?view=sql-server-ver17)
 
@@ -98,6 +128,12 @@ Training key: `E9C6FD76A9443435`
 [Query Performance Insight - Azure SQL Database](https://learn.microsoft.com/en-us/azure/azure-sql/database/query-performance-insight-use?view=azuresql)
 
 [Execution plans](https://learn.microsoft.com/en-us/sql/relational-databases/performance/execution-plans?view=sql-server-ver17)
+
+[SET TRANSACTION ISOLATION LEVEL](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-transaction-isolation-level-transact-sql?view=sql-server-ver17)
+
+[sp_query_store_force_plan](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-query-store-force-plan-transact-sql?view=sql-server-ver17)
+
+[Deadlocks guide](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-deadlocks-guide?view=sql-server-ver17)
 
 #### M07 - Implement CI/CD by using SQL database projects
 [SQL Database Projects](https://learn.microsoft.com/en-us/sql/tools/sql-database-projects/sql-database-projects?view=sql-server-ver17)
@@ -108,12 +144,20 @@ Training key: `E9C6FD76A9443435`
 
 [SqlPackage](https://learn.microsoft.com/en-us/sql/tools/sqlpackage/sqlpackage?view=sql-server-ver17)
 
+[Compare database projects](https://learn.microsoft.com/en-us/sql/tools/sql-database-projects/howto/compare-database-project?view=sql-server-ver17)
+
 #### M08 - Integrate SQL solutions with Azure services
 [Data API builder overview](https://learn.microsoft.com/en-us/azure/data-api-builder/overview)
 
 [Quickstart: Use Data API builder with SQL](https://learn.microsoft.com/en-us/azure/data-api-builder/quickstart/basic-sql)
 
 [Change Data Capture with Azure SQL Database](https://learn.microsoft.com/en-us/azure/azure-sql/database/change-data-capture-overview?view=azuresql)
+
+[About Change Data Capture](https://learn.microsoft.com/en-us/sql/relational-databases/track-changes/about-change-data-capture-sql-server?view=sql-server-ver17)
+
+[Data API Builder entities](https://learn.microsoft.com/en-us/azure/data-api-builder/configuration/entities)
+
+[Data API Builder runtime](https://learn.microsoft.com/en-us/azure/data-api-builder/configuration/runtime)
 
 ### LP3 - Implement AI capabilities in database solutions
 #### M09 - Design and implement models and embeddings with SQL
@@ -127,6 +171,8 @@ Training key: `E9C6FD76A9443435`
 
 [Intelligent applications and AI in SQL Server](https://learn.microsoft.com/en-us/sql/sql-server/ai/artificial-intelligence-intelligent-applications?view=sql-server-ver17)
 
+[AI_GENERATE_CHUNKS (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/functions/ai-generate-chunks-transact-sql?view=sql-server-ver17)
+
 #### M10 - Design and implement intelligent search with SQL
 [Full-Text Search](https://learn.microsoft.com/en-us/sql/relational-databases/search/full-text-search?view=sql-server-ver17)
 
@@ -138,6 +184,10 @@ Training key: `E9C6FD76A9443435`
 
 [Vector and embeddings FAQ](https://learn.microsoft.com/en-us/sql/sql-server/ai/vectors-frequently-asked-questions?view=sql-server-ver17)
 
+[CONTAINS (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/queries/contains-transact-sql?view=sql-server-ver17)
+
+[FREETEXT (Transact-SQL)](https://learn.microsoft.com/en-us/sql/t-sql/queries/freetext-transact-sql?view=sql-server-ver17)
+
 #### M11 - Design and implement RAG with SQL
 [sys.sp_invoke_external_rest_endpoint (Transact-SQL)](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-invoke-external-rest-endpoint-transact-sql?view=sql-server-ver17)
 
@@ -148,6 +198,8 @@ Training key: `E9C6FD76A9443435`
 [Intelligent applications and AI in SQL Server](https://learn.microsoft.com/en-us/sql/sql-server/ai/artificial-intelligence-intelligent-applications?view=sql-server-ver17)
 
 [What's new in SQL Server 2025](https://learn.microsoft.com/en-us/sql/sql-server/what-s-new-in-sql-server-2025?view=sql-server-ver17)
+
+[Remove square brackets from JSON with WITHOUT_ARRAY_WRAPPER](https://learn.microsoft.com/en-us/sql/relational-databases/json/remove-square-brackets-from-json-without-array-wrapper-option?view=sql-server-ver17)
 
 ## Mind Map
 

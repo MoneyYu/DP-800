@@ -18,8 +18,8 @@ $expectedBootstrapAssets = @(
 $expectedFullReset = Join-Path $demoRoot 'reset\Reset-AdventureGearAI.ps1'
 $expectedFullResetSql = Join-Path $demoRoot 'reset\reset-adventuregear.sql'
 $expectedDabObjects = @{
-    Category = 'api.Categories'
-    Product = 'api.Products'
+    Category = 'catalog.Categories'
+    Product = 'catalog.Products'
     ProductCatalog = 'api.ProductCatalog'
 }
 $failures = [System.Collections.Generic.List[string]]::new()

@@ -22,6 +22,8 @@ pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 3
 - 遞迴 CTE 組織圖周遊。
 - 對目錄產品使用的視窗函式（`ROW_NUMBER`、已分割的 `SUM`）。
 - `OPENJSON` 文件分解。
+- `FOR JSON PATH` 輸出、`JSON_ARRAYAGG` 關聯式轉 JSON 彙總，以及對原生 JSON 使用
+  `JSON_CONTAINS`。
 - `SOUNDEX` / `DIFFERENCE` 模糊比對。
 - SQL 圖形 `MATCH` 周遊。
 - 對客戶電子郵件執行 SQL Server 2025 `REGEXP_LIKE` 的執行階段偵測。

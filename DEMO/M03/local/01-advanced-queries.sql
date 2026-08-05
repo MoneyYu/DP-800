@@ -2,8 +2,9 @@
     M03 local/01-advanced-queries.sql
 
     Advanced T-SQL against AdventureGearAI: recursive CTE, window functions,
-    OPENJSON shredding, SOUNDEX/DIFFERENCE fuzzy matching, SQL graph MATCH,
-    runtime regular-expression feature detection, and structured error handling.
+    relational and native-json OPENJSON shredding, JSON output and aggregation,
+    SOUNDEX/DIFFERENCE fuzzy matching, SQL graph MATCH, runtime regular-expression
+    feature detection, and structured error handling.
     Read-only apart from a self-rolling-back error-handling demonstration.
     * 在 AdventureGearAI 上示範遞迴 CTE、視窗函式、JSON、模糊比對、SQL 圖形、正則運算式功能偵測與結構化錯誤處理；除自行回復的示範外均為唯讀。
 */
@@ -47,6 +48,91 @@ DECLARE @Updates nvarchar(max) = N'[{"ProductID":1,"NewPrice":1424.05},{"Product
 SELECT ProductID, NewPrice
 FROM OPENJSON(@Updates)
 WITH (ProductID int '$.ProductID', NewPrice decimal(10,2) '$.NewPrice');
+
+/* Customer order details as an API-ready JSON document. JSON_QUERY preserves
+   the nested FOR JSON result as an array rather than escaping it as text.
+   * 以 API 就緒 JSON 文件顯示每位客戶的訂單明細；JSON_QUERY 會保留巢狀陣列。
+*/
+SELECT
+    c.CustomerID,
+    c.CustomerName,
+    JSON_QUERY
+    (
+        (
+            SELECT
+                o.OrderID,
+                o.OrderDate,
+                o.OrderStatus,
+                JSON_QUERY
+                (
+                    (
+                        SELECT oi.ProductID, p.ProductName, oi.Quantity, oi.UnitPrice
+                        FROM sales.OrderItems AS oi
+                        INNER JOIN catalog.Products AS p ON p.ProductID = oi.ProductID
+                        WHERE oi.OrderID = o.OrderID
+                        ORDER BY oi.OrderItemID
+                        FOR JSON PATH
+                    )
+                ) AS Items
+            FROM sales.Orders AS o
+            WHERE o.CustomerID = c.CustomerID
+            ORDER BY o.OrderDate DESC, o.OrderID DESC
+            FOR JSON PATH
+        )
+    ) AS OrderDetailsJson
+FROM customer.Customers AS c
+WHERE EXISTS (SELECT 1 FROM sales.Orders AS o WHERE o.CustomerID = c.CustomerID)
+ORDER BY c.CustomerID;
+
+/* JSON_ARRAYAGG aggregates relational orders into one JSON array per customer.
+   * 使用 JSON_ARRAYAGG 將關聯式訂單彙總成每位客戶的一個 JSON 陣列。
+*/
+SELECT
+    c.CustomerID,
+    c.CustomerName,
+    JSON_ARRAYAGG
+    (
+        JSON_OBJECT
+        (
+            'OrderID': o.OrderID,
+            'Status': o.OrderStatus,
+            'OrderDate': o.OrderDate
+        )
+    ) AS OrderSummaryJson
+FROM customer.Customers AS c
+INNER JOIN sales.Orders AS o ON o.CustomerID = c.CustomerID
+GROUP BY c.CustomerID, c.CustomerName
+ORDER BY c.CustomerID;
+
+/* OPENJSON can read a native json column directly, unlike the @Updates
+   comparison above. It projects nested ProductMetadata attributes to rows.
+   * OPENJSON 可直接讀取原生 json 欄位，並將巢狀 ProductMetadata 屬性投影成資料列。
+*/
+SELECT
+    p.ProductID,
+    p.ProductName,
+    metadata.Terrain,
+    metadata.Frame,
+    metadata.TerrainTags
+FROM catalog.Products AS p
+CROSS APPLY OPENJSON(p.ProductMetadata)
+WITH
+(
+    Terrain nvarchar(50) '$.terrain',
+    Frame nvarchar(50) '$.frame',
+    TerrainTags nvarchar(max) '$.compatibility.terrainTags' AS JSON
+) AS metadata
+WHERE p.ProductMetadata IS NOT NULL
+ORDER BY p.ProductID;
+
+/* This native-json predicate can use a JSON index on ProductMetadata when one
+   is provisioned for the canonical column (for example, CREATE JSON INDEX).
+   * 此原生 json 述詞在 canonical 欄位佈建 JSON 索引時可使用該索引。
+*/
+SELECT ProductID, ProductName, ProductMetadata
+FROM catalog.Products
+WHERE JSON_CONTAINS(ProductMetadata, N'trail', '$.compatibility.terrainTags[*]') = 1
+ORDER BY ProductID;
 
 /* Fuzzy matching of product names against a misspelled search term.
     * 以拼錯的搜尋字詞模糊比對產品名稱。

@@ -36,7 +36,7 @@ $demoSchemas = 'catalog', 'sales', 'customer', 'security', 'ops'
 # non-interactive local script; the blocker/deadlock/observer scripts are
 # intentionally excluded from the runner's normal setup.
 $expectedSetup = @{
-    1 = @{ common = @('../M01/common/01-objects.sql'); local = @('../M01/local/01-inspect.sql') }
+    1 = @{ common = @('../M01/common/01-objects.sql', '../M01/common/02-specialized-tables.sql'); local = @('../M01/local/01-inspect.sql', '../M01/local/02-inspect-specialized.sql') }
     2 = @{ common = @('../M02/common/01-programmability.sql'); local = @('../M02/local/01-exercise.sql') }
     3 = @{ common = @('../M03/common/01-advanced-objects.sql'); local = @('../M03/local/01-advanced-queries.sql') }
     4 = @{ common = @(); local = @('../M04/local/01-review-target.sql', '../M04/local/02-reference-improvement.sql') }

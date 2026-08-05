@@ -7,30 +7,59 @@
   "runtime": {
     "rest": { "enabled": true, "path": "/api" },
     "graphql": { "enabled": true, "path": "/graphql" },
-    "host": { "mode": "development" }
+    "host": { "mode": "development" },
+    "cache": { "enabled": true, "ttl-seconds": 30 }
   },
   "entities": {
     "Category": {
       "source": {
-        "object": "api.Categories",
-        "type": "view",
+        "object": "catalog.Categories",
+        "type": "table",
         "key-fields": ["CategoryID"]
+      },
+      "cache": { "enabled": true, "ttl-seconds": 30 },
+      "relationships": {
+        "products": {
+          "cardinality": "many",
+          "target.entity": "Product",
+          "source.fields": ["CategoryID"],
+          "target.fields": ["CategoryID"]
+        }
       },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
     },
     "Product": {
       "source": {
-        "object": "api.Products",
-        "type": "view",
+        "object": "catalog.Products",
+        "type": "table",
         "key-fields": ["ProductID"]
       },
       "mappings": {
         "ProductID": "id",
         "ProductName": "name",
-        "UnitPrice": "price",
-        "UnitsInStock": "stockQuantity"
+        "UnitPrice": "price"
+      },
+      "cache": { "enabled": true, "ttl-seconds": 30 },
+      "relationships": {
+        "category": {
+          "cardinality": "one",
+          "target.entity": "Category",
+          "source.fields": ["CategoryID"],
+          "target.fields": ["CategoryID"]
+        }
       },
       "permissions": [{ "role": "anonymous", "actions": ["read"] }]
+    },
+    "ProductsByCategory": {
+      "source": {
+        "object": "api.GetProductsByCategory",
+        "type": "stored-procedure",
+        "parameters": [
+          { "name": "CategoryID", "default": null }
+        ]
+      },
+      "graphql": { "operation": "query" },
+      "permissions": [{ "role": "anonymous", "actions": ["execute"] }]
     },
     "ProductCatalog": {
       "source": {

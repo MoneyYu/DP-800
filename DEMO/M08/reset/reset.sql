@@ -52,33 +52,151 @@ END;
 GO
 
 /* ---------------------------------------------------------------------------
-   Teardown module-owned views only. The canonical catalog core is never dropped.
+   Teardown CDC objects owned by M08, then module-owned API views, procedure,
+   and CDC status. The canonical catalog core is never dropped.
 ---------------------------------------------------------------------------
 只拆除模組專屬檢視表。標準 catalog 核心絕不會被卸除。
 */
-DROP VIEW IF EXISTS api.InventoryAvailability;
-DROP VIEW IF EXISTS api.ProductCatalog;
-DROP VIEW IF EXISTS api.Products;
-DROP VIEW IF EXISTS api.Categories;
-GO
+DECLARE @DisableCdcDatabase bit = 0;
+DECLARE @M08CaptureInstance sysname;
+DECLARE @M08CaptureTableObjectId int;
+DECLARE @M08CaptureTableCreatedAt datetime;
+DECLARE @ExpectedM08CaptureInstance sysname = N'AdventureGearM08Products';
+DECLARE @M08CaptureExists bit = 0;
+DECLARE @RemainingCaptureCount int = 0;
+DECLARE @AppLockResult int;
+DECLARE @AppLockHeld bit = 0;
 
-/* ---------------------------------------------------------------------------
-   State reset: only Module 8 (no dependents).
----------------------------------------------------------------------------
-狀態重設：只重設模組 8（沒有相依項）。
-*/
-UPDATE ops.DemoModuleState
-SET Status = N'NotStarted',
-    StartedAtUtc = NULL,
-    CompletedAtUtc = NULL,
-    LastError = NULL,
-    ErrorNumber = NULL,
-    ErrorLine = NULL,
-    UpdatedAtUtc = SYSUTCDATETIME()
-WHERE ModuleNumber IN (8);
+EXEC @AppLockResult = sys.sp_getapplock
+    @Resource = N'DP800.M08.CdcOwnership',
+    @LockMode = N'Exclusive',
+    @LockOwner = N'Session',
+    @LockTimeout = 60000;
+
+IF @AppLockResult < 0
+    THROW 51081, 'M08 reset could not acquire the CDC ownership lock.', 1;
+
+SET @AppLockHeld = 1;
+
+BEGIN TRY
+    IF EXISTS
+    (
+        SELECT 1
+        FROM ops.DemoModuleState
+        WHERE ModuleNumber = 8
+          AND Status = N'Running'
+    )
+        THROW 51082, 'M08 reset refused while Module 8 is Running; wait for setup to finish before resetting.', 1;
+
+    /* The application lock protects this revalidation-and-disable sequence from
+       concurrent M08 setup/reset runs. Do not infer ownership from the source
+       table: only the recorded dedicated capture identity is removable. */
+    IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'DatabaseCdcEnabledByModule') IS NOT NULL
+        SELECT @DisableCdcDatabase = DatabaseCdcEnabledByModule
+        FROM api.CdcRuntimeStatus
+        WHERE CdcRuntimeStatusID = 1;
+
+    IF OBJECT_ID(N'api.CdcRuntimeStatus', N'U') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureInstance') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableObjectId') IS NOT NULL
+       AND COL_LENGTH(N'api.CdcRuntimeStatus', N'M08CaptureTableCreatedAt') IS NOT NULL
+        SELECT
+            @M08CaptureInstance = M08CaptureInstance,
+            @M08CaptureTableObjectId = M08CaptureTableObjectId,
+            @M08CaptureTableCreatedAt = M08CaptureTableCreatedAt
+        FROM api.CdcRuntimeStatus
+        WHERE CdcRuntimeStatusID = 1;
+
+    IF @M08CaptureInstance = @ExpectedM08CaptureInstance
+       AND EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+    BEGIN
+        /* cdc.change_tables does not exist when database CDC is disabled. Query it
+           dynamically only after the database-level guard has succeeded. */
+        EXEC sys.sp_executesql
+            N'
+            SELECT @CaptureExists = CONVERT(bit, CASE WHEN EXISTS
+            (
+                SELECT 1
+                FROM cdc.change_tables
+                WHERE source_object_id = OBJECT_ID(N''catalog.Products'')
+                  AND capture_instance = @CaptureInstance
+                  AND OBJECT_ID(N''cdc.'' + capture_instance + N''_CT'') = @CaptureTableObjectId
+                  AND EXISTS
+                  (
+                      SELECT 1
+                      FROM sys.objects AS cdcTable
+                      WHERE cdcTable.object_id = @CaptureTableObjectId
+                        AND cdcTable.create_date = @CaptureTableCreatedAt
+                  )
+            ) THEN 1 ELSE 0 END);',
+            N'@CaptureInstance sysname, @CaptureTableObjectId int, @CaptureTableCreatedAt datetime, @CaptureExists bit OUTPUT',
+            @CaptureInstance = @ExpectedM08CaptureInstance,
+            @CaptureTableObjectId = @M08CaptureTableObjectId,
+            @CaptureTableCreatedAt = @M08CaptureTableCreatedAt,
+            @CaptureExists = @M08CaptureExists OUTPUT;
+
+        IF @M08CaptureExists = 1
+        BEGIN
+            EXEC sys.sp_cdc_disable_table
+                @source_schema = N'catalog',
+                @source_name = N'Products',
+                @capture_instance = @ExpectedM08CaptureInstance;
+        END;
+    END;
+
+    /* Count every surviving capture while holding the ownership lock whenever
+       M08 enabled database CDC. This includes a setup failure that recorded no
+       exact M08 capture marker. Database CDC can be disabled only when no
+       capture remains, so foreign captures are never disabled by this reset. */
+    IF @DisableCdcDatabase = 1
+       AND EXISTS (SELECT 1 FROM sys.databases WHERE database_id = DB_ID() AND is_cdc_enabled = 1)
+    BEGIN
+        EXEC sys.sp_executesql
+            N'SELECT @RemainingCount = COUNT(*) FROM cdc.change_tables;',
+            N'@RemainingCount int OUTPUT',
+            @RemainingCount = @RemainingCaptureCount OUTPUT;
+
+        IF @DisableCdcDatabase = 1
+           AND @RemainingCaptureCount = 0
+            EXEC sys.sp_cdc_disable_db;
+    END;
+
+    DROP TABLE IF EXISTS api.CdcRuntimeStatus;
+    DROP PROCEDURE IF EXISTS api.GetProductsByCategory;
+    DROP VIEW IF EXISTS api.InventoryAvailability;
+    DROP VIEW IF EXISTS api.ProductCatalog;
+    DROP VIEW IF EXISTS api.Products;
+    DROP VIEW IF EXISTS api.Categories;
+
+    /* M08 has no downstream module dependents. Keep the module state transition
+       under the ownership lock until every owned API object is removed, so a
+       concurrent setup cannot observe or overwrite partial teardown state. */
+    UPDATE ops.DemoModuleState
+    SET Status = N'NotStarted',
+        StartedAtUtc = NULL,
+        CompletedAtUtc = NULL,
+        LastError = NULL,
+        ErrorNumber = NULL,
+        ErrorLine = NULL,
+        UpdatedAtUtc = SYSUTCDATETIME()
+    WHERE ModuleNumber IN (8);
+END TRY
+BEGIN CATCH
+    IF @AppLockHeld = 1
+        EXEC sys.sp_releaseapplock
+            @Resource = N'DP800.M08.CdcOwnership',
+            @LockOwner = N'Session';
+    THROW;
+END CATCH;
+
+IF @AppLockHeld = 1
+    EXEC sys.sp_releaseapplock
+        @Resource = N'DP800.M08.CdcOwnership',
+        @LockOwner = N'Session';
 GO
 
 SET NOEXEC OFF;
 GO
-PRINT N'M08 reset complete: api.* projection views removed; M08 marked NotStarted.';
+PRINT N'M08 reset complete: M08 CDC capture, api.* projection views, and procedure removed; M08 marked NotStarted.';
 GO

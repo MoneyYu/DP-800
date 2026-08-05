@@ -107,6 +107,7 @@ try {
         'Test-UnifiedDemoResetsRuntime.ps1'
         'Test-UnifiedDemoProductionFlowRuntime.ps1'
         'Test-UnifiedDemoM06ConcurrencyRuntime.ps1'
+        'Test-DabIntegrationRuntime.ps1'
         'Test-DemoLocalizationRuntime.ps1'
     )
 
@@ -147,7 +148,7 @@ try {
         $sw.Stop()
 
         $status = if ($code -ne 0) { 'FAIL' }
-        elseif ($output -match '(?m)^\s*SKIP:') { 'SKIP' }
+        elseif ($output -match '(?m)^\s*SKIP:' -and $output -notmatch '(?m)^PASS \(') { 'SKIP' }
         else { 'PASS' }
 
         $color = switch ($status) { 'PASS' { 'Green' } 'FAIL' { 'Red' } default { 'Yellow' } }

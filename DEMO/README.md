@@ -30,9 +30,19 @@ The bootstrap provisions eight domain schemas inside `AdventureGearAI`:
 | `search` | M10 search documents built from catalog products and customer reviews. |
 | `ai` | M09 embedding documents and the M11 RAG prompt/procedure surface. |
 
-The canonical seed (created once by the bootstrap) is a small AdventureGear
-catalog: bikes, components, accessories, clothing, and navigation products, their
-customers, orders, and reviews. Modules extend this core; they never recreate it.
+The canonical seed (created once by the bootstrap) has **10 categories, 150
+products, 120 customers, 800 orders, 2,400 order items, and 500 reviews**.
+Modules extend this core; they never recreate it. This deterministic data volume
+is independent of feature detection: native `json` and JSON index operations
+can be taught from the same seed even when In-Memory OLTP, Ledger, Sequence,
+PolyBase, Full-Text Search, or another installed feature is unavailable.
+
+M01 adds native JSON, a preview SQL Server 2025 JSON index, In-Memory OLTP,
+Ledger, Sequence, and feature-detected PolyBase external metadata. Its reset
+keeps the memory-optimized filegroup/container (removing it can hang a
+container) and may leave an engine-managed dropped-ledger table after a Ledger
+drop; both are intentional. Use the [custom FTS/PolyBase Docker image](docker/README.md)
+when Full-Text Search or PolyBase is needed.
 
 ## Local connection
 
@@ -155,14 +165,14 @@ automatically deleted).
 
 | Module | Local SQL Server 2025 | Azure path |
 |---|---|---|
-| M01 objects | Temporal price, indexed JSON projection, partitioning, graph over `catalog` | Same core syntax; service-tier/storage choices differ |
+| M01 objects | Native JSON/preview JSON index, temporal, In-Memory, Ledger, Sequence, partitioning, graph, and feature-detected PolyBase over `catalog` | Same core syntax; service-tier/storage choices differ |
 | M02 programmability | Views, procedures, functions, triggers in `sales` | Same core objects |
 | M03 advanced T-SQL | CTE, windows, JSON, fuzzy, graph, error handling; regex detected | Azure SQL supports the documented regex surface by service/version |
 | M04 AI-assisted workflow | Offline prompt/review exercise over `sales`/`customer`; no Copilot API dependency | Use approved Copilot/Fabric tooling and identity controls |
 | M05 security | DDM and RLS execute in `security`; TDE/Always Encrypted are inspected/explained | TDE is platform-managed; Entra and auditing are Azure paths |
 | M06 performance | Query Store, plans, DMVs; blocking/deadlock scripts are **interactive** and excluded from the runner (run by hand in multiple sessions) | Service tiers and Query Performance Insight are Azure-only |
 | M07 CI/CD | SDK SQL project **builds** a dacpac targeting `AdventureGearAI`; optional local **publish** via the passwordless Entra profile | GitHub Actions sample uses repository secrets/OIDC |
-| M08 Data API Builder | DAB serves `api.*` views from a local connection string in the environment | Managed identity and Azure hosting are documented separately |
+| M08 Data API Builder | DAB relationship entities use `catalog.Categories`/`catalog.Products`; `api.ProductCatalog` and `api.InventoryAvailability` remain separate read-model entities so stock stays available | Managed identity and Azure hosting are documented separately |
 | M09 models/embeddings | `vector` and external-model catalog feature-detected; **external REST/model generation** is skipped without an approved endpoint/credential | Managed identity plus `CREATE EXTERNAL MODEL` template |
 | M10 intelligent search | Full-text and exact `VECTOR_DISTANCE` demos when installed/supported; ANN is truthfully skipped when the local build lacks the **vector index** surface | DiskANN/`VECTOR_SEARCH` requires supported Azure/preview configuration |
 | M11 RAG | Builds retrieval context/prompt from `search`; **external REST** execution is feature-detected and needs an approved endpoint credential | Azure REST generation path uses managed identity and Azure SQL |

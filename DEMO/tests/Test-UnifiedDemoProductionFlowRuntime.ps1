@@ -108,10 +108,31 @@ function Invoke-FullReset {
 
 function Assert-CoreIntact {
     param([string]$Context)
-    $checks = @{ 'catalog.Categories' = 5; 'catalog.Products' = 12; 'catalog.Inventory' = 12; 'customer.Customers' = 6; 'customer.ProductReviews' = 14; 'sales.Orders' = 6; 'sales.OrderItems' = 13 }
+    $checks = [ordered]@{
+        'catalog.Categories'      = 10
+        'catalog.Products'        = 150
+        'catalog.Inventory'       = 150
+        'customer.Customers'      = 120
+        'customer.ProductReviews' = 500
+        'sales.Orders'            = 800
+        'sales.OrderItems'        = 2400
+        'ops.DemoModuleState'     = 11
+        'ops.DemoEnvironment'     = 1
+    }
     foreach ($t in $checks.Keys) {
         $c = Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM $t;"
         if ($c -ne $checks[$t]) { Add-Failure "[$Context] canonical core $t count is $c (expected $($checks[$t]))." }
+    }
+    $canonicalRows = Get-Scalar -Query @"
+SET NOCOUNT ON;
+SELECT CONCAT(
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 1), N'|',
+    (SELECT ProductName FROM catalog.Products WHERE ProductID = 4), N'|',
+    (SELECT CustomerName FROM customer.Customers WHERE CustomerID = 3)
+);
+"@
+    if ($canonicalRows -ne 'Trailblazer 29 Bike|Puncture Guard Tire|Jordan Patel') {
+        Add-Failure "[$Context] canonical seed rows changed: '$canonicalRows'."
     }
     $schemaCount = Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.schemas WHERE name IN (N'catalog',N'sales',N'customer',N'security',N'ops',N'api',N'search',N'ai');"
     if ($schemaCount -ne 8) { Add-Failure "[$Context] expected 8 domain schemas but found $schemaCount." }
@@ -169,9 +190,9 @@ try {
 
     Write-Host '--- Item 4: representative objects / counts per module ---'
     # M01
-    Assert-Count 'M01 catalog.ProductPrice' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductPrice;') 12
+    Assert-Count 'M01 catalog.ProductPrice' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductPrice;') 150
     Assert-Count 'M01 sales.PartitionedOrders' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM sales.PartitionedOrders;') 5
-    Assert-Count 'M01 catalog.ProductNode' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductNode;') 12
+    Assert-Count 'M01 catalog.ProductNode' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM catalog.ProductNode;') 150
     if ((Get-Int "SET NOCOUNT ON; SELECT CASE WHEN COL_LENGTH('catalog.Products','MetadataFrame') IS NOT NULL THEN 1 ELSE 0 END;") -ne 1) { Add-Failure 'M01 catalog.Products.MetadataFrame computed column is missing.' }
     # M02
     foreach ($obj in 'sales.vw_CustomerOrderSummary', 'sales.fn_OrderTotal', 'sales.usp_AddOrderItem', 'sales.trg_OrderStatusAudit', 'sales.OrderStatusAudit') { Assert-Present -Object $obj -Context 'M02' }
@@ -180,7 +201,7 @@ try {
     Assert-Count 'M03 ops.EmployeeNode' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.EmployeeNode;') 5
     Assert-Count 'M03 ops.ReportsTo' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.ReportsTo;') 4
     # M05
-    Assert-Count 'M05 security.SecureCustomers' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 6
+    Assert-Count 'M05 security.SecureCustomers' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM security.SecureCustomers;') 120
     Assert-Count 'M05 CustomerRegionPolicy' (Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.security_policies WHERE name='CustomerRegionPolicy';") 1
     Assert-Count 'M05 AdventureGearMaskedReader' (Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.database_principals WHERE name='AdventureGearMaskedReader';") 1
     # M06
@@ -192,17 +213,17 @@ try {
     Assert-Present -Object 'catalog.usp_LogInventoryChange' -Context 'M07'
     if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ops.DeploymentLog;') -lt 1) { Add-Failure 'M07 ops.DeploymentLog must record at least one deployment.' }
     # M08
-    Assert-Count 'M08 api.Products view rows' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM api.Products;') 12
+    Assert-Count 'M08 api.Products view rows' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM api.Products;') 150
     foreach ($obj in 'api.Categories', 'api.ProductCatalog', 'api.InventoryAvailability') { Assert-Present -Object $obj -Context 'M08' }
     if ((Get-Int "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.tables WHERE name IN (N'ApiProducts', N'ApiCategories');") -ne 0) { Add-Failure 'M08 must not create duplicate Api* tables.' }
     if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM api.Products v WHERE NOT EXISTS (SELECT 1 FROM catalog.Products p WHERE p.ProductID = v.ProductID);') -ne 0) { Add-Failure 'M08 api.Products must project only canonical catalog.Products rows.' }
     # M09
-    Assert-Count 'M09 ai.EmbeddingDocuments' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ai.EmbeddingDocuments;') 14
-    # M10: >= 100 documents, all with non-null vectors, all traceable to canonical products
+    Assert-Count 'M09 ai.EmbeddingDocuments' (Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM ai.EmbeddingDocuments;') 500
+    # M10: one document for each review/variant pair, all traceable to canonical products.
     $searchRows = Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM search.SearchDocuments;'
-    if ($searchRows -lt 100) { Add-Failure "M10 search.SearchDocuments must have >= 100 rows; found $searchRows." }
+    if ($searchRows -ne 5000) { Add-Failure "M10 search.SearchDocuments must have 5000 rows; found $searchRows." }
     $nonNullVectors = Get-Int 'SET NOCOUNT ON; SELECT COUNT(SearchVector) FROM search.SearchDocuments;'
-    if ($nonNullVectors -lt 100) { Add-Failure "M10 must have >= 100 non-null vectors; found $nonNullVectors." }
+    if ($nonNullVectors -ne 5000) { Add-Failure "M10 must have 5000 non-null vectors; found $nonNullVectors." }
     if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM search.SearchDocuments WHERE SearchVector IS NULL;') -ne 0) { Add-Failure 'M10 search.SearchDocuments must not contain null vectors.' }
     if ((Get-Int 'SET NOCOUNT ON; SELECT COUNT(*) FROM search.SearchDocuments d WHERE NOT EXISTS (SELECT 1 FROM catalog.Products p WHERE p.ProductID = d.ProductID);') -ne 0) { Add-Failure 'M10 search.SearchDocuments must derive from canonical catalog.Products.' }
     # M11: prompt builder is grounded in the canonical corpus

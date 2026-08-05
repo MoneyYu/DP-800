@@ -12,8 +12,12 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $demoRoot = Join-Path $repoRoot 'DEMO'
 $scriptsRoot = Join-Path $demoRoot 'scripts'
 $runnerScript = Join-Path $scriptsRoot 'Invoke-DemoModule.ps1'
+$orchestratorScript = Join-Path $PSScriptRoot 'Invoke-AllUnifiedDemoTests.ps1'
 $manifestJson = Join-Path $scriptsRoot 'module-manifest.json'
 $dabConfigPath = Join-Path $demoRoot 'M08\common\dab-config.json'
+$dabRuntimeTestPath = Join-Path $PSScriptRoot 'Test-DabIntegrationRuntime.ps1'
+$dabLocalReadmePath = Join-Path $demoRoot 'M08\local\README.md'
+$dabLocalReadmeZhTwPath = Join-Path $demoRoot 'M08\local\README.zh-TW.md'
 $publishProfilePath = Join-Path $demoRoot 'M07\common\Dp800.Database\DP800.publish.xml'
 $sqlProject = Join-Path $demoRoot 'M07\common\Dp800.Database\Dp800.Database.sqlproj'
 
@@ -91,7 +95,7 @@ Assert-Equal -Actual ((Resolve-DemoModuleExecutionPlan -Requested @(7, 8, 9, 10,
 Assert-Equal -Actual ((Resolve-DemoModuleExecutionPlan -Requested 11) -join ',') -Expected '1,9,10,11' -Message 'Direct M11 must resolve M01,M09,M10,M11 in dependency order.'
 Assert-Equal -Actual ((Resolve-DemoModuleExecutionPlan -Requested 7) -join ',') -Expected '1,7' -Message 'M07 depends only on core+M01.'
 
-# --- 4) DAB config parses and sources the api.* domain views ------------------
+# --- 4) DAB config parses and splits relationship and read-model entities -----
 $dabText = Get-Text -Path $dabConfigPath
 $dab = $null
 if ($null -ne $dabText) {
@@ -100,8 +104,8 @@ if ($null -ne $dabText) {
 }
 if ($null -ne $dab) {
     $expectedSources = @{
-        Category              = 'api.Categories'
-        Product               = 'api.Products'
+        Category              = 'catalog.Categories'
+        Product               = 'catalog.Products'
         ProductCatalog        = 'api.ProductCatalog'
         InventoryAvailability = 'api.InventoryAvailability'
     }
@@ -109,11 +113,31 @@ if ($null -ne $dab) {
         $entity = $dab.entities.$entityName
         Assert-True -Condition ($null -ne $entity) -Message "DAB entity '$entityName' is missing."
         if ($null -eq $entity) { continue }
-        Assert-Equal -Actual ([string]$entity.source.object) -Expected $expectedSources[$entityName] -Message "DAB entity '$entityName' must source the domain view."
+        Assert-Equal -Actual ([string]$entity.source.object) -Expected $expectedSources[$entityName] -Message "DAB entity '$entityName' must source its configured DAB contract object."
     }
+    $expectedProductMappings = @{
+        ProductID   = 'id'
+        ProductName = 'name'
+        UnitPrice   = 'price'
+    }
+    foreach ($mappingName in $expectedProductMappings.Keys) {
+        Assert-Equal -Actual ([string]$dab.entities.Product.mappings.$mappingName) -Expected $expectedProductMappings[$mappingName] -Message "DAB Product mapping '$mappingName' must be preserved."
+    }
+    Assert-True -Condition ($null -eq $dab.entities.Product.mappings.PSObject.Properties['UnitsInStock']) -Message 'DAB Product must not map UnitsInStock because catalog.Products does not contain that column.'
     # Connection string must come from the environment, not a literal secret.
     Assert-Equal -Actual ([string]$dab.'data-source'.'connection-string') -Expected "@env('DATABASE_CONNECTION_STRING')" -Message 'DAB connection string must be sourced from the environment only.'
 }
+$dabRuntimeTest = Get-Text -Path $dabRuntimeTestPath
+Assert-Present -Text $dabRuntimeTest -Pattern 'Microsoft\.DataApiBuilder' -Message 'DAB must have a database-connected runtime integration test.'
+Assert-Present -Text $dabRuntimeTest -Pattern '2\.0\.9' -Message 'DAB runtime integration test must pin Microsoft.DataApiBuilder 2.0.9.'
+Assert-Present -Text $dabRuntimeTest -Pattern 'DATABASE_CONNECTION_STRING' -Message 'DAB runtime integration test must use the process-scoped connection string.'
+foreach ($readmePath in $dabLocalReadmePath, $dabLocalReadmeZhTwPath) {
+    $readmeText = Get-Text -Path $readmePath
+    Assert-Present -Text $readmeText -Pattern 'Microsoft\.DataApiBuilder.*--version\s+2\.0\.9' -Message "$readmePath must pin the DAB CLI version to 2.0.9."
+    Assert-Present -Text $readmeText -Pattern '(?i)runtime.*test|執行階段.*測試' -Message "$readmePath must document the DAB runtime integration test."
+}
+$orchestratorText = Get-Text -Path $orchestratorScript
+Assert-Present -Text $orchestratorText -Pattern "'Test-DabIntegrationRuntime\.ps1'" -Message 'The unified test orchestrator must explicitly run the DAB runtime integration test.'
 # The migrated API script must not recreate duplicate Api tables.
 $apiSql = Get-Text -Path (Join-Path $demoRoot 'M08\common\01-product-api.sql')
 Assert-Absent -Text $apiSql -Pattern '(?i)CREATE\s+TABLE\s+dbo\.ApiProducts' -Message 'M08 must not create a duplicate dbo.ApiProducts table.'

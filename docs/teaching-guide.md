@@ -251,10 +251,44 @@ WITH (METRIC = 'cosine', TYPE = 'DISKANN');
 
 **DEMO 建議順序**
 
-1. 以 hybrid runner 對單一 `AdventureGearAI` 執行：`pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 1`。runner 先確保 core，再依序跑 `common/01-objects.sql` → `local/01-inspect.sql`；已 Completed 時加 `-Force` 重跑。
+1. 以 hybrid runner 對單一 `AdventureGearAI` 執行：`pwsh -NoProfile -File DEMO/scripts/Invoke-DemoModule.ps1 -Modules 1`。runner 先確保 core，再依序跑 `common/01-objects.sql` → `common/02-specialized-tables.sql` → `local/01-inspect.sql` → `local/02-inspect-specialized.sql`；已 Completed 時加 `-Force` 重跑。
 2. 需要重來（module-scoped reset，不 drop database）：對 `AdventureGearAI` 執行 `pwsh -NoProfile -File DEMO/scripts/Invoke-Dp800Sql.ps1 -Database AdventureGearAI -InputFile DEMO/M01/reset/reset.sql`，只移除 M01 objects 並把 M01–M11 標記 NotStarted，canonical core 保留；再重跑 runner。
 
-展示 temporal `SYSTEM_TIME`、JSON/index、partition、graph node／edge。Azure SQL core syntax 相近，但 filegroup／storage choice 與 boxed SQL Server 不同。
+**完整 PPT feature mapping 與可用性界線**
+
+- Table design：以 bootstrap 的原生 `json` 資料行、`JSON_VALUE`、`JSON_PATH_EXISTS`、
+  `JSON_CONTAINS` 與 `.modify()` 對應半結構化資料；`CREATE JSON INDEX` 是 SQL Server
+  2025 preview surface，必須先說明版本/feature availability。
+- Specialized tables：temporal 對應歷程、In-Memory OLTP 對應低延遲快取、updatable Ledger
+  對應 tamper-evidence、Sequence 對應受控號碼配發、PolyBase external table 對應外部資料的
+  metadata；graph 與 partitioning 繼續對應 relationship 與 scale。
+- Bootstrap 的課堂資料量固定為 **10 categories／150 products／120 customers／800 orders／
+  2,400 order items／500 reviews**。這是 deterministic seed contract；不可把它誤說成
+  In-Memory、PolyBase 或 Full-Text Search 可用性的證據，feature detection 要在當天 image
+  上另行執行。
+- 若需要 Full-Text Search 或 PolyBase，先依
+  [`DEMO/docker/README.md`](../DEMO/docker/README.md) 使用 custom FTS/PolyBase Docker image；
+  未安裝時要展示真實 skip。M01 reset 只卸除 In-Memory table，刻意保留
+  memory-optimized filegroup/container，避免 containerized SQL Server 在移除時停滯。
+  卸除 Ledger 後引擎可能保留 dropped-ledger table 供驗證，這是正常行為。
+
+展示 temporal `SYSTEM_TIME`、native JSON/index、In-Memory、Ledger、Sequence、constraint、
+feature-detected PolyBase、partition、graph node／edge。Azure SQL core syntax 相近，但
+filegroup／storage choice 與 boxed SQL Server 不同。
+
+**模組新增內容與手動邊界**
+
+- M03：展示 `FOR JSON PATH`、`JSON_ARRAYAGG` 與 `JSON_CONTAINS`，不只做 `OPENJSON`。
+- M05：`default()` DDM 與 object-level `GRANT`/`DENY` 為 normal runner；TDE 是需要既有
+  master database master key 的手動、暫存資料庫示範，絕不對 AdventureGearAI 加密。
+- M06：blocking/deadlock、RCSI isolation comparison 與 Query Store plan forcing 都是手動/
+  多工作階段流程，刻意不放入 runner；local 需明確切換 disposable probe 的 RCSI，Azure
+  仍要讀取實際 row-versioning setting。
+- M08：normal runner 佈建 CDC/API views；DAB cache、relationships、stored-procedure entity
+  只在 configuration 中描述，不保存 connection string。
+- M09–M11：`AI_GENERATE_CHUNKS` 需 compatibility level 170；M10 的 `FREETEXT` 需 FTS；
+  M11 以 `WITHOUT_ARRAY_WRAPPER` 和 nested native JSON 維持 grounding。這些 availability
+  gate 都應先講清楚，再示範結果。
 
 **Official Lab**
 
