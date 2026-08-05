@@ -1,5 +1,7 @@
 # M09 — Models and embeddings with SQL
 
+English | [繁體中文](README.zh-TW.md)
+
 Provision embedding sources against **AdventureGearAI** with the unified runner:
 
 ```powershell

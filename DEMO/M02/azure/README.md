@@ -1,5 +1,7 @@
 # Azure notes
 
+English | [繁體中文](README.zh-TW.md)
+
 The sales programmability objects use portable Azure SQL syntax and run against
 the AdventureGearAI schema set on Azure SQL. For production, replace broad
 execution rights with least-privilege grants, use Entra principals where

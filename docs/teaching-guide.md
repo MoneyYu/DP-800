@@ -67,6 +67,7 @@ tags: DP-800, Trainer, Teaching
 - [ ] 確認既有 Docker container `mssql2025` 已由外部流程啟動；repo 不負責建立、啟停或刪除 container。
 - [ ] 安裝 PowerShell 7 與 `sqlcmd`。
 - [ ] 密碼只從 `DP800_SQL_PASSWORD`、`SQLCMDPASSWORD` 或 secure prompt 取得；不得放入 script、argument、`.env`、文件、截圖或 Git。
+- [ ] DEMO 文件以英文 `README.md` 與繁體中文 `README.zh-TW.md` 同目錄成對維護；請由根目錄的 [`DEMO/README.md`](../DEMO/README.md) 或 [`DEMO/README.zh-TW.md`](../DEMO/README.zh-TW.md) 進入，兩版的可執行命令必須相同。
 - [ ] 執行 `pwsh DEMO/bootstrap/Invoke-Bootstrap.ps1`，確認只建立**單一** `AdventureGearAI` 資料庫（含 `catalog`／`sales`／`customer`／`security`／`ops`／`api`／`search`／`ai` schema、`ops.DemoEnvironment` marker、`ops.DemoModuleState` 與 canonical AdventureGear ecommerce seed）。
 - [ ] 確認 bootstrap 不建立 per-module 資料庫；任何殘留的 legacy `DP800_Mxx` 只會被列為 manual cleanup candidate，永不自動刪除（never automatically deleted）。
 - [ ] 需要時以 hybrid runner 跑 module：`pwsh DEMO/scripts/Invoke-DemoModule.ps1 -Modules <n>`（或 `Invoke-Bootstrap.ps1 -Modules <n>`）；不加 `-Modules` 則 core-only。

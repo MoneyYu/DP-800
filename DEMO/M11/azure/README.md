@@ -1,5 +1,7 @@
 # Azure RAG path
 
+English | [繁體中文](README.zh-TW.md)
+
 1. Run in Azure SQL Database, not the local SQL Server container.
 2. Create the endpoint database scoped credential with managed identity outside this repository.
 3. Grant the database identity access to the approved Azure OpenAI deployments.

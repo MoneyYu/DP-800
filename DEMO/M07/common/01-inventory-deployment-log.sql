@@ -1,4 +1,4 @@
-/*
+﻿/*
     M07 common setup — CI/CD demo objects for AdventureGearAI.
 
     The dependency-aware module runner provisions M07 by executing this
@@ -10,7 +10,10 @@
 
     The catalog and ops schemas are created by the AdventureGearAI core
     bootstrap; this script only adds the module objects and is safe to re-run.
-*/
+    M07 共用設定：AdventureGearAI 的 CI/CD 示範物件。
+    相依性感知的模組執行器會對唯一的 AdventureGearAI 資料庫執行此冪等指令碼來佈建 M07。它建立 SDK 樣式 SQL 專案（common/Dp800.Database）建置為 dacpac 的相同 catalog/ops 物件，因此執行器有實際工作可將 M07 標示為 Completed，而 SQL 專案仍是可分別透過 local/Build-SqlProject.ps1 與 azure/build-deploy.yml 示範的可建置 CI/CD 成品。
+    catalog 與 ops 結構描述由 AdventureGearAI 核心 bootstrap 建立；此指令碼只新增模組物件，且可安全地重新執行。
+    */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 GO
@@ -65,7 +68,9 @@ BEGIN
 END;
 GO
 
-/* Record this provisioning as a deployment so the CI/CD log is never empty. */
+/* Record this provisioning as a deployment so the CI/CD log is never empty.
+   將這次佈建記錄為部署，確保 CI/CD 記錄絕不會是空的。
+   */
 INSERT ops.DeploymentLog (ReleaseTag, Notes)
 VALUES (N'M07-setup', N'AdventureGearAI SQL project objects provisioned by the unified demo runner.');
 GO

@@ -1,4 +1,4 @@
-/*
+﻿/*
     M02 common/01-programmability.sql
 
     Module 2 (Implement programmability objects) for the unified AdventureGearAI
@@ -12,6 +12,7 @@
       * sales.fn_CustomerOrders                (inline table-valued function)
       * sales.usp_AddOrderItem                 (transactional stored procedure)
       * sales.trg_OrderStatusAudit             (AFTER UPDATE trigger on sales.Orders)
+    * 模組 2 在 AdventureGearAI 的 sales 結構描述建立可程式性物件，操作標準 sales、customer、catalog 核心；使用 CREATE OR ALTER 與受保護刪除提供等冪建立。
 */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;

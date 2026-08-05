@@ -1,11 +1,13 @@
-/*
+﻿/*
     report-legacy-databases.sql
 
     Reports any pre-existing per-module databases (the retired DP800_Mxx fleet)
     as MANUAL cleanup candidates only. This script never creates, alters, or
     drops any database; the unified demo owns only AdventureGearAI. Operators
     decide whether to remove the legacy databases manually.
-*/
+    report-legacy-databases.sql
+    將任何預先存在的每模組資料庫（已淘汰的 DP800_Mxx 群組）僅報告為手動清理候選項。此指令碼絕不建立、變更或卸除任何資料庫；統一示範只擁有 AdventureGearAI。操作人員自行決定是否要手動移除舊版資料庫。
+    */
 SET NOCOUNT ON;
 GO
 

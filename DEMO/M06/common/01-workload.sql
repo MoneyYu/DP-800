@@ -1,4 +1,4 @@
-/*
+﻿/*
     M06 common/01-workload.sql
 
     Module 6 (Optimize database performance) workload for AdventureGearAI. It
@@ -9,6 +9,7 @@
 
     Idempotent: the table is dropped and rebuilt, and Query Store is enabled with
     a repeatable option set.
+    * 模組 6 的 AdventureGearAI 效能最佳化工作負載建立衍生自標準 catalog、customer 核心的 ops.PerformanceOrders，並以可重複的選項啟用 Query Store。
 */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -32,6 +33,7 @@ GO
 
 /* Amplify the canonical catalog/customer rows into a tunable workload. Each row
    maps to an existing ProductID (1..12) and CustomerID (1..6) so foreign keys
+   * 將標準 catalog、customer 資料列擴增為可調校工作負載，同時維持外部索引鍵與情境一致性。
    hold and the data stays true to the AdventureGearAI scenario. */
 ;WITH Numbers AS
 (

@@ -1,4 +1,4 @@
-/*
+﻿/*
     M06 reset/reset.sql
 
     Module-scoped reset for the unified AdventureGearAI demo. It NEVER drops a
@@ -19,6 +19,7 @@
     Intended to run against AdventureGearAI via DEMO/scripts/Invoke-Dp800Sql.ps1,
     which executes the read-only Assert-DemoDatabase.sql guard first. The inline
     guard below is defence-in-depth for direct execution.
+    * 統一 AdventureGearAI 的模組 6 範圍重設：絕不刪除資料庫；只移除效能工作負載並將 M06 還原為 NotStarted，保留標準核心與已啟用的 Query Store。
 */
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
@@ -26,7 +27,9 @@ SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
 
-/* Guard 1: refuse to run against anything but AdventureGearAI. */
+/* Guard 1: refuse to run against anything but AdventureGearAI.
+    * 保護條件 1：拒絕在 AdventureGearAI 以外的資料庫執行。
+*/
 IF DB_NAME() <> N'AdventureGearAI'
 BEGIN
     DECLARE @db sysname = DB_NAME();
@@ -35,7 +38,9 @@ BEGIN
 END;
 GO
 
-/* Guard 2: refuse to run without a valid AdventureGearAI environment marker. */
+/* Guard 2: refuse to run without a valid AdventureGearAI environment marker.
+    * 保護條件 2：沒有有效的 AdventureGearAI 環境標記時拒絕執行。
+*/
 IF OBJECT_ID(N'ops.DemoEnvironment', N'U') IS NULL
    OR NOT EXISTS (SELECT 1 FROM ops.DemoEnvironment WHERE DemoEnvironmentID = 1 AND DatabaseName = N'AdventureGearAI')
 BEGIN
@@ -47,12 +52,14 @@ GO
 /* ---------------------------------------------------------------------------
    Teardown module-owned workload only. Dropping the table also drops its
    covering index. Query Store remains enabled at the database level.
+   * 只依相依安全順序清除模組擁有的物件；標準核心不會被刪除。
 --------------------------------------------------------------------------- */
 DROP TABLE IF EXISTS ops.PerformanceOrders;
 GO
 
 /* ---------------------------------------------------------------------------
    State reset: only Module 6 (no dependents).
+   * 狀態重設僅影響註解中指定的模組及其相依模組。
 --------------------------------------------------------------------------- */
 UPDATE ops.DemoModuleState
 SET Status = N'NotStarted',

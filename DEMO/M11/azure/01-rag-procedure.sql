@@ -1,4 +1,4 @@
-:setvar AzureOpenAIEndpointName "REPLACE_AT_RUNTIME"
+﻿:setvar AzureOpenAIEndpointName "REPLACE_AT_RUNTIME"
 :setvar ChatDeploymentName "REPLACE_AT_RUNTIME"
 
 CREATE OR ALTER PROCEDURE ai.usp_AskProductQuestion
@@ -9,7 +9,9 @@ BEGIN
     SET NOCOUNT ON;
 
     /* Retrieve grounding context from the M10 search corpus (search schema),
-       which is built from the canonical AdventureGearAI products and reviews. */
+       which is built from the canonical AdventureGearAI products and reviews.
+       從 M10 搜尋語料庫（search 結構描述）取得接地內容；語料庫由標準 AdventureGearAI 產品和評論建立。
+       */
     DECLARE @Context nvarchar(max) =
     (
         SELECT TOP (5)

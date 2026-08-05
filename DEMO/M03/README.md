@@ -1,5 +1,7 @@
 # M03 — Write advanced T-SQL
 
+English | [繁體中文](README.zh-TW.md)
+
 Module 3 demonstrates advanced query techniques against **AdventureGearAI**. A
 self-contained org-chart teaching object (`ops.EmployeeHierarchy` plus graph
 node/edge tables) supports the recursive-CTE and graph demos, while the

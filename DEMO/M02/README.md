@@ -1,5 +1,7 @@
 # M02 — Implement programmability objects
 
+English | [繁體中文](README.zh-TW.md)
+
 Module 2 provisions programmability objects in the **sales** domain schema of the
 unified **AdventureGearAI** database. They operate on the canonical
 `sales.Orders` / `sales.OrderItems` / `customer.Customers` / `catalog.Products`

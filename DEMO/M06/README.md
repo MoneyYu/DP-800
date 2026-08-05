@@ -1,5 +1,7 @@
 # M06 — Optimize database performance
 
+English | [繁體中文](README.zh-TW.md)
+
 Module 6 builds a tunable workload (`ops.PerformanceOrders`) derived from the
 canonical **AdventureGearAI** catalog/customer core and demonstrates execution
 plans, a covering index, Query Store, and DMV inspection.

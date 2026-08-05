@@ -1,4 +1,4 @@
-/*
+﻿/*
     Assert-DemoDatabase.sql
 
     Read-only safety guard for the unified AdventureGearAI demo. It performs NO
@@ -14,7 +14,11 @@
     Any tooling that runs demo module setup against a non-master database should
     execute this guard first so a mis-targeted connection can never mutate the
     wrong database. The messages are explicit so operators can diagnose quickly.
-*/
+    Assert-DemoDatabase.sql
+    統一 AdventureGearAI 示範的唯讀安全防護。它不進行任何寫入，只檢查目前連線和作業標記。
+    除非下列每一項都成立，否則防護會失敗（RAISERROR 嚴重性 16，在使用 -b 叫用時會中止 sqlcmd）：使用中的連線位於字面名稱為 AdventureGearAI 的資料庫；ops.DemoEnvironment 單例標記資料表存在；並且存在有效的標記資料列（DemoEnvironmentID = 1、DatabaseName = AdventureGearAI）。
+    任何針對非 master 資料庫執行示範模組設定的工具都應先執行此防護，讓目標錯誤的連線永遠無法變更錯誤的資料庫。訊息明確，可讓操作人員快速診斷。
+    */
 SET NOCOUNT ON;
 
 DECLARE @currentDatabase sysname = DB_NAME();
